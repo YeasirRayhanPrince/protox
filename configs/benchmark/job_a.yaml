@@ -6,8 +6,8 @@ mythril:
     benchbase: False
     allow_per_query: True
     early_workload_kill: True
-    query_directory: "/home/wz2/mythril/queries/job_a"
-    query_order: "/home/wz2/mythril/queries/job_a/order.txt"
+    query_directory: "queries/job_a"
+    query_order: "queries/job_a/order.txt"
     tbl_include_subsets_prune: True
 
   max_num_columns: 12

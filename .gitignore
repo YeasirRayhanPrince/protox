@@ -3,3 +3,23 @@ __pycache__
 artifacts
 nohup.out
 faiss
+
+# Harvested Gen-DBA training records. These are DATA, not source: ~150MB and
+# growing, regenerable from scripts/gendba/ + the snapshots. They live here so
+# they survive the CloudLab node (only /proj persists), not to be versioned.
+gendba_records/
+
+# Claude session transcripts + memory, synced off the node-local disk.
+claude_sessions/
+
+# Machine-local staging that ends up under the repo
+data
+job2_models/
+tpch2_models/
+dsb_data_models/
+tpcc_worlds/
+initial_job.json
+initial_tpch.json
+initial_dsb.json
+stub_benchbase.xml
+configs/config_cloudlab*.yaml

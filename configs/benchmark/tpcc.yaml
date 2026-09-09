@@ -6,8 +6,8 @@ mythril:
     benchbase: True
     allow_per_query: False
     early_workload_kill: False
-    query_directory: "/home/wz2/mythril/queries/tpcc"
-    query_order: "/home/wz2/mythril/queries/tpcc/txn.txt"
+    query_directory: "queries/tpcc"
+    query_order: "queries/tpcc/txn.txt"
     tbl_include_subsets_prune: True
 
   max_num_columns: 21

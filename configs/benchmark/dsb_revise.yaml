@@ -6,8 +6,8 @@ mythril:
     benchbase: False
     allow_per_query: True
     early_workload_kill: True
-    query_directory: "/home/wz2/mythril/queries/dsb_revise"
-    query_order: "/home/wz2/mythril/queries/dsb_revise/d_order.txt"
+    query_directory: "queries/dsb_revise"
+    query_order: "queries/dsb_revise/d_order.txt"
     tbl_include_subsets_prune: True
 
     tbl_fold_subsets: True
