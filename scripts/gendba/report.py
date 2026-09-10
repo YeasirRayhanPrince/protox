@@ -72,6 +72,12 @@ def main():
     print(f"  {'':12s}" + "".join(f"{p:>12s}" for p in pols))
     for b in benches:
         print(f"  {b:12s}" + "".join(f"{by.get((b, p), 0):>12d}" for p in pols))
+    kinds = collections.Counter((r["task"]["benchmark"],
+                                 r["task"].get("task", "index_selection")) for _, r in eps)
+    print("\n--- task kinds ---")
+    for (b, k), n in sorted(kinds.items()):
+        print(f"  {b:6s} {k:24s} {n}")
+
     print("\n--- starting states ---")
     for (b, k), n in sorted(starts.items()):
         print(f"  {b:6s} {k:12s} {n}")
@@ -79,8 +85,11 @@ def main():
     # --- outcomes --------------------------------------------------------
     print("\n--- measured outcomes ---")
     for b in benches:
-        sp = [r["terminal"]["measured"]["speedup"] for _, r in eps
-              if r["task"]["benchmark"] == b]
+        sp = [s for _, r in eps if r["task"]["benchmark"] == b
+              for s in [(r["terminal"].get("measured") or {}).get("speedup")]
+              if s is not None]
+        if not sp:
+            print(f"  {b:6s} no episode reports a speedup"); continue
         regr = [s for s in sp if s < 1.0]
         print(f"  {b:6s} n={len(sp):3d}  median={statistics.median(sp):.3f}x  "
               f"best={max(sp):.3f}x  worst={min(sp):.3f}x  regressions={len(regr)}")
@@ -101,7 +110,14 @@ def main():
     tot = right = wrong = 0
     gains = []
     for _, r in eps:
-        fin = r["terminal"]["measured"]["workload_ms_after"]
+        # Not every episode type has a workload total. A query-optimization episode
+        # is scored per query, and a multi-component one reports its own. Adjudication
+        # compares a rejected candidate against the accepted workload, so an episode
+        # without that total simply has nothing to adjudicate -- skip it rather than
+        # crash the whole report on the first one.
+        fin = (r["terminal"].get("measured") or {}).get("workload_ms_after")
+        if fin is None:
+            continue
         for e in r["events"]:
             p = e.get("payload") or {}
             if p.get("kind") == "top_k_adjudication":
