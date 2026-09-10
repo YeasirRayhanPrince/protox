@@ -33,7 +33,17 @@ def main():
     ap.add_argument("--trials", type=int, default=5)
     ap.add_argument("--port", type=int, default=5492)
     ap.add_argument("--out", default=GENDBA_BUILD + "/traces/noise.json")
+    ap.add_argument("--suggest-repeats", action="store_true",
+                    help="print ONLY the cheapest protocol whose noise floor is "
+                         "under --target-floor, as a repeat count, for a script to "
+                         "consume. Everything else goes to stderr.")
+    ap.add_argument("--target-floor", type=float, default=1.02,
+                    help="the smallest speedup the protocol must be able to "
+                         "distinguish from noise (default 1.02 = 2%%)")
     args = ap.parse_args()
+    # In suggest mode stdout carries one number and nothing else, so a caller can
+    # read it directly; the human-readable table still goes somewhere visible.
+    out = sys.stderr if args.suggest_repeats else sys.stdout
 
     results = {}
     for warmup, repeats in [(0, 1), (1, 1), (1, 3), (2, 3)]:
@@ -61,11 +71,32 @@ def main():
         }
         print(f"{key:22s} mean={mean:9.1f}ms  cv={cv:5.2f}%  "
               f"cost={statistics.mean(secs):5.1f}s  "
-              f"min detectable speedup ~{1 + 2 * cv / 100:.3f}x")
+              f"min detectable speedup ~{1 + 2 * cv / 100:.3f}x", file=out)
         env.conn.close()
 
     json.dump(results, open(args.out, "w"), indent=2)
-    print(f"\nwrote {args.out}")
+    print(f"\nwrote {args.out}", file=out)
+
+    if args.suggest_repeats:
+        # Cheapest protocol that can actually see the effect we care about. Sorting
+        # by cost rather than by noise matters: the lowest-noise protocol is usually
+        # also the most expensive, and on a workload where a pass is milliseconds
+        # the cheapest adequate one may still be many repeats.
+        ok = [(v["seconds_per_measurement"], k, v) for k, v in results.items()
+              if v["min_detectable_speedup"] <= args.target_floor]
+        if ok:
+            _, key, v = min(ok)
+            print(f"chose {key}: floor {v['min_detectable_speedup']}x "
+                  f"<= target {args.target_floor}x at "
+                  f"{v['seconds_per_measurement']}s/measurement", file=sys.stderr)
+        else:
+            # Nothing reached the target: take the quietest available and say so,
+            # rather than silently returning a protocol that cannot see the effect.
+            key, v = min(results.items(), key=lambda kv: kv[1]["min_detectable_speedup"])
+            print(f"WARNING no protocol reached {args.target_floor}x; best is {key} "
+                  f"at {v['min_detectable_speedup']}x -- effects smaller than that "
+                  f"are not measurable here", file=sys.stderr)
+        print(int(key.split("repeats=")[1]))
 
 
 if __name__ == "__main__":
