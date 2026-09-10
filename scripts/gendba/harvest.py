@@ -444,7 +444,8 @@ def apply_constraint(task, algo_name):
 
 
 def run_episode(task, algo_name, port, out_dir, quarantine_dir, adjudicate_k,
-                restore=False, query_timeout_s=300.0):
+                restore=False, query_timeout_s=300.0,
+                measure_repeats=1, measure_warmup=0):
     task = apply_constraint(task, algo_name)
     AlgoCls, params_fn, constraint_kind = ALGORITHMS[algo_name]
     policy_meta = {"name": algo_name, "kind": "white-box heuristic",
@@ -452,7 +453,9 @@ def run_episode(task, algo_name, port, out_dir, quarantine_dir, adjudicate_k,
                    "constraint_honoured": constraint_kind,
                    "params": params_fn(task)}
     env = IndexTuningEnv(task, port=port, policy_meta=policy_meta,
-                         query_timeout_s=query_timeout_s)
+                         query_timeout_s=query_timeout_s,
+                         measure_repeats=measure_repeats,
+                         measure_warmup=measure_warmup)
     env.reset(restore_snapshot=restore)
     ep = env.episode
     base = env.baseline()
@@ -543,6 +546,13 @@ def main():
     ap.add_argument("--query-select", default="head", choices=["head", "one-per-shape"])
     # 30s matches what the paper shipped for TPC-H and DSB (params.json); JOB used 15s.
     ap.add_argument("--query-timeout", type=float, default=300.0)
+    # warmup=0/repeats=1 was DERIVED for the analytic benchmarks, where one workload
+    # pass costs ~18s and repeating it bought nothing (CV 0.34%). TPC-C is point
+    # lookups: a pass is milliseconds, so the same protocol measures mostly noise
+    # while costing nothing to repeat. The right value is a property of the
+    # workload's cost structure, not a constant, so it is a flag.
+    ap.add_argument("--measure-repeats", type=int, default=1)
+    ap.add_argument("--measure-warmup", type=int, default=0)
     ap.add_argument("--initial-kind", default="pk_only",
                     help="starting state label to match when resuming (pk_only|configured)")
     ap.add_argument("--widths", default="2")
@@ -589,7 +599,9 @@ def main():
         try:
             score, status, findings, n_adj = run_episode(
                 task, algo, args.port, out_dir, quarantine, args.adjudicate_k,
-                query_timeout_s=args.query_timeout)
+                query_timeout_s=args.query_timeout,
+                measure_repeats=args.measure_repeats,
+                measure_warmup=args.measure_warmup)
         except Exception as e:
             print(f"[{i}/{len(plan)}] {task.id()} {algo:11s} EPISODE ERROR {e}")
             traceback.print_exc()
