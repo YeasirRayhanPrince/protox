@@ -171,7 +171,14 @@ class IndexTuningEnv:
         self.queries = self._load_queries(qdir, qorder, task.n_queries,
                                           select=task.query_select)
 
-        self.conn = psycopg2.connect(f"host=localhost port={port} dbname={dbname}")
+        # Name the role explicitly. Without a user in the DSN libpq falls back to the
+        # OS user, so this only ever worked because the callers happened to export
+        # PGUSER -- and a caller that did not (run_tpcc.sh) failed every episode with
+        # 'role "yrayhan" does not exist'. Environment still wins, so nothing that
+        # already sets PGUSER changes behaviour.
+        _user = _os.environ.get("PGUSER", "admin")
+        self.conn = psycopg2.connect(
+            f"host=localhost port={port} dbname={dbname} user={_user}")
         self.conn.autocommit = True
         with self.conn.cursor() as c:
             c.execute("SET lock_timeout = '120s'")
@@ -727,6 +734,10 @@ class IndexTuningEnv:
             c.execute(f"SET statement_timeout = '{int(self.query_timeout_s * 1000)}'")
             if mutating:
                 c.execute("BEGIN")
+                # The warmup writes too, and its rows stay visible to the measured
+                # passes unless undone -- which is how the first measured pass hit a
+                # duplicate key on the very rows the warmup had just inserted.
+                c.execute("SAVEPOINT gendba_warmpass")
             for _ in range(self.measure_warmup):
                 for q in queries:
                     try:
@@ -743,36 +754,78 @@ class IndexTuningEnv:
                             c.execute("ROLLBACK TO SAVEPOINT gendba_warm")
                         else:
                             self.conn.rollback()
-            for q in queries:
-                runs = []
-                for _ in range(self.measure_repeats):
-                    t = time.time()
-                    try:
-                        if mutating:
+            if mutating:
+                c.execute("ROLLBACK TO SAVEPOINT gendba_warmpass")
+            def note_failure(qid, e, t):
+                timed_out = "statement timeout" in str(e).lower()
+                failed[qid] = {
+                    "outcome": "timeout" if timed_out else "error",
+                    "limit_s": self.query_timeout_s,
+                    "elapsed_ms": round((time.time() - t) * 1000, 1),
+                    "detail": str(e).strip().splitlines()[0][:200],
+                    "censored_at_ms": self.query_timeout_s * 1000,
+                }
+
+            runs_by_q = {q["id"]: [] for q in queries}
+            if mutating:
+                # PASS-outer, not query-outer. A mutating workload's repeats must each
+                # start from the same state: TPC-C's statements carry literal primary
+                # keys, so running one twice in a row is a duplicate-key violation --
+                # the workload conflicts with ITSELF. Rolling back to a pass savepoint
+                # makes every pass identical.
+                #
+                # The order within a pass is preserved rather than isolating each
+                # statement, because these are transaction FRAGMENTS with real
+                # dependencies (new_order references the row oorder inserts), and
+                # measuring them independently would model a workload nobody runs.
+                for _ in range(max(1, self.measure_repeats)):
+                    c.execute("SAVEPOINT gendba_pass")
+                    for q in queries:
+                        t = time.time()
+                        try:
                             c.execute("SAVEPOINT gendba_q")
-                        _run(c, q["text"])
-                        runs.append((time.time() - t) * 1000)
-                        if mutating:
+                            _run(c, q["text"])
+                            runs_by_q[q["id"]].append((time.time() - t) * 1000)
                             c.execute("RELEASE SAVEPOINT gendba_q")
-                    except Exception as e:
-                        if mutating:
+                        except Exception as e:
                             c.execute("ROLLBACK TO SAVEPOINT gendba_q")
-                        else:
+                            note_failure(q["id"], e, t)
+                    c.execute("ROLLBACK TO SAVEPOINT gendba_pass")
+            else:
+                for q in queries:
+                    for _ in range(self.measure_repeats):
+                        t = time.time()
+                        try:
+                            _run(c, q["text"])
+                            runs_by_q[q["id"]].append((time.time() - t) * 1000)
+                        except Exception as e:
                             self.conn.rollback()
-                        timed_out = "statement timeout" in str(e).lower()
-                        failed[q["id"]] = {
-                            "outcome": "timeout" if timed_out else "error",
-                            "limit_s": self.query_timeout_s,
-                            "elapsed_ms": round((time.time() - t) * 1000, 1),
-                            "detail": str(e).strip().splitlines()[0][:200],
-                            "censored_at_ms": self.query_timeout_s * 1000,
-                        }
-                        break
+                            note_failure(q["id"], e, t)
+                            break
+
+            for q in queries:
+                runs = runs_by_q[q["id"]]
                 if runs:
                     out[q["id"]] = round(sorted(runs)[len(runs) // 2], 1)
-                else:
-                    # censored, not missing: keeps before/after over one query set
+                elif failed.get(q["id"], {}).get("outcome") == "timeout":
+                    # censored, not missing: keeps before/after over one query set.
+                    # The limit is a genuine LOWER BOUND -- the query really did run
+                    # at least that long.
                     out[q["id"]] = round(self.query_timeout_s * 1000, 1)
+                else:
+                    # An error is not a timeout. Crediting the timeout limit to a
+                    # statement that failed in a millisecond invents workload that
+                    # never ran: three TPC-C errors became 900s of a 900s "workload",
+                    # swamping every real measurement in it. Charge what it actually
+                    # cost before failing, and let `failed` carry the reason.
+                    out[q["id"]] = round(
+                        failed.get(q["id"], {}).get("elapsed_ms", 0.0), 1)
+            if mutating:
+                # Undo everything this measurement did. Without it the database drifts
+                # between the before and after measurement and the speedup is not a
+                # speedup -- which is the entire reason a write workload needs its own
+                # protocol.
+                c.execute("ROLLBACK")
             c.execute("SET statement_timeout = 0")
         return out, {"warmup": self.measure_warmup, "repeats": self.measure_repeats,
                      "statistic": "median", "cache": "warm",

@@ -42,7 +42,10 @@ BBDIR=$BB/target/benchbase-postgres
 # ---- 2. cluster ---------------------------------------------------------
 if [ ! -d "$PGDATA" ]; then
   say "initdb $PGDATA"
-  "$PGBIN/initdb" -D "$PGDATA" -U admin --auth-local=trust --auth-host=md5 >> "$LOG" 2>&1
+  # trust, matching every other cluster in this harness: it listens on localhost
+  # only, and env.py connects without a password. A stricter setting here bought no
+  # security and failed all 36 episodes with "no password supplied".
+  "$PGBIN/initdb" -D "$PGDATA" -U admin --auth-local=trust --auth-host=trust >> "$LOG" 2>&1
   # Same knobs the other clusters run, so a TPC-C episode is comparable with a JOB one.
   cat >> "$PGDATA/postgresql.conf" <<CONF
 port = $PORT
@@ -58,7 +61,7 @@ max_wal_size = '32GB'
 checkpoint_timeout = '30min'
 listen_addresses = 'localhost'
 CONF
-  echo "host all all 127.0.0.1/32 md5" >> "$PGDATA/pg_hba.conf"
+  echo "host all all 127.0.0.1/32 trust" >> "$PGDATA/pg_hba.conf"
 fi
 
 "$PGBIN/pg_ctl" -D "$PGDATA" status >/dev/null 2>&1 || {
