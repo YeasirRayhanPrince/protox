@@ -328,6 +328,9 @@ def run_episode(env, q, out_dir, quarantine_dir, max_candidates=12, measure_k=4,
                   "provenance": MEASURED,
                   "protocol": {"repeats": repeats, "statistic": "median",
                                "query_timeout_s": env.query_timeout_s}},
+        constraint={"kind": "plan_only", "value": 0, "observed": 0, "violated": False,
+                    "note": "query optimization is unconstrained by storage; the "
+                            "action is a plan, not a physical design"},
         cost_model_picked_winner=bool(est_rank and est_rank[0] == best["shape"]),
         n_effective_rules=len(effective), n_distinct_plans=len(combos),
         reward=round(speedup - 1.0, 4))

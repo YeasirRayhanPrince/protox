@@ -118,7 +118,7 @@ class Episode:
         self.terminal: dict = {}
 
     # ------------------------------------------------------------------ header
-    def fingerprint_environment(self, conn, snapshot: str | None = None):
+    def fingerprint_environment(self, conn, snapshot=None):
         """
         Everything needed to interpret -- or reproduce -- this episode. Without it a
         measured latency is an uninterpretable number.
@@ -137,8 +137,13 @@ class Episode:
                        FROM pg_stat_user_tables""")
         ntab, last_analyze = cur.fetchone()
 
+        # A caller with no restore tarball may pass a descriptor instead of a path,
+        # so "which state did this episode start from" is answered explicitly rather
+        # than left as a bare None that reads as "not recorded".
         snap = None
-        if snapshot and os.path.exists(snapshot):
+        if isinstance(snapshot, dict):
+            snap = snapshot
+        elif snapshot and os.path.exists(snapshot):
             st = os.stat(snapshot)
             snap = {"path": snapshot, "size_bytes": st.st_size,
                     "mtime_utc": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()}

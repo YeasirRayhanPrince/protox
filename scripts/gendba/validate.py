@@ -161,8 +161,52 @@ def validate(rec: dict) -> list[Finding]:
                     f"workload_ms_{tag}={total} != sum(per_query)={sum(per_q.values()):.1f}")
 
     # ---- configuration legality, against the benchmark config ------------
+    # Episodes are not all index selection. A query-optimization episode's
+    # configuration is a PLAN (disabled optimizer rules + plan shape), so the index
+    # checks below do not apply to it and would report `unknown table None`.
+    task_kind = task.get("task", "index_selection")
     bench = task.get("benchmark")
-    if bench in BENCH_CFG:
+    if task_kind == "query_optimization":
+        valid_rules = {"enable_bitmapscan", "enable_gathermerge", "enable_hashagg",
+                       "enable_hashjoin", "enable_indexonlyscan", "enable_indexscan",
+                       "enable_material", "enable_mergejoin", "enable_nestloop",
+                       "enable_parallel_hash", "enable_seqscan", "enable_sort"}
+        for c in term.get("configuration", []):
+            if "query" not in c:
+                add("fail", "configuration", "QO configuration entry names no query")
+            bad = [r for r in (c.get("disabled_rules") or []) if r not in valid_rules]
+            if bad:
+                add("fail", "configuration", f"unknown optimizer rules: {bad}")
+    elif task_kind == "multi_component_tuning":
+        # A UniTune configuration is one entry per ARM -- a knob dict, an index set --
+        # not a list of indexes. Judging it against the indexable-column table would
+        # report "index on unknown table None" for every entry.
+        arms = {c.get("arm") for c in term.get("configuration", [])}
+        if not arms:
+            add("fail", "configuration", "multi-component configuration names no arm")
+        unknown = arms - {"knob", "index", "query", "view"}
+        if unknown:
+            add("fail", "configuration", f"unknown arm(s): {sorted(unknown)}")
+        # The meta-decision is the point of the episode: without a recorded choice
+        # there is nothing here that the rest of the corpus does not already have.
+        if not any(e["kind"] == "decision" for e in rec["events"]):
+            add("fail", "meta_decision", "no arm-selection decision was recorded")
+        for e in rec["events"]:
+            if e["kind"] != "decision":
+                continue
+            pl = e.get("payload") or {}
+            if not (pl.get("accepted") or {}).get("arm"):
+                add("fail", "meta_decision", f"event {e['i']}: decision names no arm")
+            if pl.get("rejected") is None:
+                add("fail", "meta_decision",
+                    f"event {e['i']}: no alternatives recorded -- a choice with no "
+                    "alternatives is not a decision")
+            for r in pl.get("rejected") or []:
+                if (r.get("discriminant") or {}).get("criterion") == "unavailable":
+                    add("suspect", "meta_decision",
+                        f"event {e['i']}: discriminant capture failed for "
+                        f"{r.get('arm')!r}; the choice is recorded but not its reason")
+    elif bench in BENCH_CFG:
         allowed = _indexable(bench)
         for idx in term.get("configuration", []):
             t, cols = idx.get("table"), idx.get("columns", [])
@@ -181,10 +225,20 @@ def validate(rec: dict) -> list[Finding]:
     con = term.get("constraint") or {}
     if not con:
         add("fail", "constraint", "terminal.constraint missing")
+    elif con.get("kind") == "plan_only":
+        pass          # QO episodes are unconstrained by storage; nothing to check
     else:
         kind, val, obs, viol = (con.get("kind"), con.get("value"),
                                 con.get("observed"), con.get("violated"))
-        if kind not in ("budget_MB", "max_indexes"):
+        if kind == "tuning_budget_s":
+            # A wall-clock budget is bounded by one sub-run's overrun, not by the
+            # limit itself, so `violated` is judged against the same tolerance the
+            # producer applies rather than a bare observed > value.
+            if obs is not None and val is not None and (obs > val * 1.10) != bool(viol):
+                add("fail", "constraint",
+                    f"observed {obs}s vs tuning budget {val}s disagrees with "
+                    f"violated={viol}")
+        elif kind not in ("budget_MB", "max_indexes"):
             add("fail", "constraint", f"unknown constraint kind {kind!r}")
         elif obs is not None and val is not None and (obs > val) != bool(viol):
             add("fail", "constraint",
