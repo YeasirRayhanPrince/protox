@@ -52,7 +52,8 @@ KNOWN_SCHEMA = {"1.0"}
 
 BENCH_CFG = {"job": "configs/benchmark/job_full.yaml",
              "tpch": "configs/benchmark/tpch.yaml",
-             "dsb": "configs/benchmark/dsb_s10.yaml"}
+             "dsb": "configs/benchmark/dsb_s10.yaml",
+             "tpcc": "configs/benchmark/tpcc.yaml"}
 
 
 @dataclass

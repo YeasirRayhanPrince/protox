@@ -75,7 +75,26 @@ BENCHMARKS = {
              "tpch_sf10_base.tgz"),
     "dsb":  ("configs/benchmark/dsb_s10.yaml", "queries/dsb_10", "queries/dsb_10/d_order.txt",
              "dsb_sf10_base.tgz"),
+    "tpcc": ("configs/benchmark/tpcc.yaml", "queries/tpcc", "queries/tpcc/txn.txt",
+             "tpcc_base.tgz"),
 }
+
+# Workloads that MUTATE. Every other benchmark in this harness is read-only, which is
+# what lets us measure, change the configuration, and measure again against the same
+# database. TPC-C writes -- and its statements carry literal primary keys, so running
+# the workload twice is a duplicate-key violation, not merely a drift.
+#
+# The protocol for these is: run the whole workload inside a transaction and ROLL IT
+# BACK. Index maintenance is still paid (the index tuples are written before the
+# rollback), so an index's cost on a write workload becomes visible for the first
+# time, while the database does not drift and before/after remain comparable.
+#
+# What this protocol does NOT capture, and what any consumer has to be told:
+#   * no commit, so WAL flush / fsync cost is understated
+#   * rolled-back tuples are still dead tuples that a real system must vacuum
+#   * one long transaction holds a snapshot, so it does not model concurrency
+# It is declared in the episode rather than left for a reader to infer.
+MUTATING = {"tpcc"}
 
 IDX_PREFIX = "gendba_"
 
@@ -594,6 +613,9 @@ class IndexTuningEnv:
                         self.conn.rollback()
                     except Exception:
                         raise      # connection is gone; priming cannot continue
+            if mutating:
+                # Undo the workload. This is what keeps before and after comparable.
+                c.execute("ROLLBACK")
             c.execute("SET statement_timeout = 0")
         self._primed = True
 
@@ -620,12 +642,20 @@ class IndexTuningEnv:
         stmts = _statements(q["text"])
         i = _explainable(stmts)
         mode = "ANALYZE, FORMAT JSON" if analyze else "FORMAT JSON"
+        # EXPLAIN ANALYZE executes the statement, so on a write workload it is itself a
+        # mutation -- and _explainable falls through to the last statement when there is
+        # no SELECT, which for TPC-C means we would be EXPLAIN ANALYZEing an INSERT with
+        # a literal primary key. Confine it to a transaction that is thrown away.
+        # Plain EXPLAIN does not execute, so it needs no such protection.
+        wrap = analyze and self.task.benchmark in MUTATING
         with self.conn.cursor() as c:
             # EXPLAIN ANALYZE actually EXECUTES the query, so it needs the same cap as
             # a measurement. Without it this path ran DSB Q23 for 363s against a 30s
             # timeout -- a third of the episode -- and left uncapped orient cost in the
             # record, corrupting the tool-time signal we deliberately collect.
             c.execute(f"SET statement_timeout = '{int(self.query_timeout_s * 1000)}'")
+            if wrap:
+                c.execute("BEGIN")
             try:
                 for st in stmts[:i]:
                     c.execute(st)
@@ -633,6 +663,8 @@ class IndexTuningEnv:
                 root = c.fetchone()[0][0]
                 for st in stmts[i + 1:]:
                     c.execute(st)
+                if wrap:
+                    c.execute("ROLLBACK")
             except Exception as e:
                 self.conn.rollback()
                 timed_out = "statement timeout" in str(e).lower()
@@ -690,23 +722,43 @@ class IndexTuningEnv:
         "genuinely slow" from "broke mid-measurement" without re-running everything.
         """
         out, failed = {}, {}
+        mutating = self.task.benchmark in MUTATING
         with self.conn.cursor() as c:
             c.execute(f"SET statement_timeout = '{int(self.query_timeout_s * 1000)}'")
+            if mutating:
+                c.execute("BEGIN")
             for _ in range(self.measure_warmup):
                 for q in queries:
                     try:
+                        if mutating:
+                            c.execute("SAVEPOINT gendba_warm")
                         _run(c, q["text"])
+                        if mutating:
+                            c.execute("RELEASE SAVEPOINT gendba_warm")
                     except Exception:
-                        self.conn.rollback()
+                        # A failed statement aborts the WHOLE transaction in
+                        # PostgreSQL, so on a mutating workload one bad statement
+                        # would poison the remaining 32. The savepoint confines it.
+                        if mutating:
+                            c.execute("ROLLBACK TO SAVEPOINT gendba_warm")
+                        else:
+                            self.conn.rollback()
             for q in queries:
                 runs = []
                 for _ in range(self.measure_repeats):
                     t = time.time()
                     try:
+                        if mutating:
+                            c.execute("SAVEPOINT gendba_q")
                         _run(c, q["text"])
                         runs.append((time.time() - t) * 1000)
+                        if mutating:
+                            c.execute("RELEASE SAVEPOINT gendba_q")
                     except Exception as e:
-                        self.conn.rollback()
+                        if mutating:
+                            c.execute("ROLLBACK TO SAVEPOINT gendba_q")
+                        else:
+                            self.conn.rollback()
                         timed_out = "statement timeout" in str(e).lower()
                         failed[q["id"]] = {
                             "outcome": "timeout" if timed_out else "error",
