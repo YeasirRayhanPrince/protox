@@ -282,7 +282,23 @@ class IndexTuningEnv:
         self.episode = Episode(task={**asdict(self.task), "id": self.task.id()},
                                policy=self.policy_meta,
                                collector="scripts/gendba/env.py")
-        self.episode.fingerprint_environment(self.conn, snapshot=f"{DATA}/{self.snapshot}")
+        # Not every benchmark is restored from a tarball. TPC-C is loaded in place by
+        # BenchBase and reset by DDL, so there is no snapshot file -- and a silent
+        # None reads as "not recorded" rather than "there isn't one", which the gate
+        # rightly refuses. Declare the actual starting state instead.
+        _snap_path = f"{DATA}/{self.snapshot}"
+        _snap = _snap_path if _os.path.exists(_snap_path) else {
+            "kind": "loaded_in_place_no_restore",
+            "database": self.dbname,
+            "port": self.port,
+            "reset": "ddl",
+            "note": "no snapshot tarball exists for this benchmark; the cluster is "
+                    "loaded once and episodes reset by dropping the indexes they "
+                    "created. For a mutating workload the measurement itself is also "
+                    "rolled back, so the data is unchanged across episodes.",
+            "provenance": DECLARED,
+        }
+        self.episode.fingerprint_environment(self.conn, snapshot=_snap)
         self.episode.set_workload(self.queries)
         self.episode.set_initial_state(self.conn)
         self.episode.header["action_space"] = {

@@ -110,6 +110,32 @@ def _runtime_for(t):
     return {50: 1, 100: 2, 250: 3, 500: 5, 1000: 8, 2500: 10}.get(int(t.budget_mb), 5)
 
 
+def patch_ise_connection(port, user=None):
+    """
+    index_selection_evaluation hardcodes its connection string
+    (postgres_dbms.py:27): host=localhost port=5492, with no user. That silently
+    ignores --port, so a harvest aimed at another cluster connects to the wrong
+    database -- or, when the OS user has no role there, fails every episode with
+    'role "..." does not exist'.
+
+    Patched on the class rather than edited in the submodule, exactly as we do for
+    its _prepare_query bug, so the checkout stays clean and the fix travels with the
+    harness.
+    """
+    import psycopg2 as _pg
+    _user = user or _os.environ.get("PGUSER", "admin")
+
+    def create_connection(self):
+        if self._connection:
+            self.close()
+        self._connection = _pg.connect(
+            f"host=localhost port={port} dbname={self.db_name} user={_user}")
+        self._connection.autocommit = self.autocommit
+        self._cursor = self._connection.cursor()
+
+    PostgresDatabaseConnector.create_connection = create_connection
+
+
 def patch_ise_prepare_query(conn):
     """
     Work around an upstream bug in index_selection_evaluation.
@@ -468,6 +494,7 @@ def run_episode(task, algo_name, port, out_dir, quarantine_dir, adjudicate_k,
         env.call("PROBE", {"what": "explain_analyze", "query": q["id"]})
 
     workload = build_ise_workload(env)
+    patch_ise_connection(port)
     conn = patch_ise_prepare_query(PostgresDatabaseConnector(env.dbname))
     params = params_fn(task)
     if algo_name == "extend":
