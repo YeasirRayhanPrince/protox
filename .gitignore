@@ -30,3 +30,7 @@ unitune_run/gendba_*.ini
 unitune_run/*_validate.ini
 unitune_run/job_v2.ini
 unitune_run/logs/
+
+# Node-local artifacts copied to /proj so they survive the CloudLab allocation:
+# measured experiment traces and harvest logs. Data, not source.
+node_artifacts/
