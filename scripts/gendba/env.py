@@ -686,7 +686,18 @@ class IndexTuningEnv:
                 if wrap:
                     c.execute("ROLLBACK")
             except Exception as e:
-                self.conn.rollback()
+                # The connection is in autocommit, so psycopg2 does not know about the
+                # BEGIN we issued ourselves and conn.rollback() is a NO-OP against it.
+                # The aborted transaction would then stay open and poison every later
+                # statement -- which is exactly how this failed: the next _explain died
+                # on its opening SET, not on anything it was asked to do.
+                if wrap:
+                    try:
+                        c.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                else:
+                    self.conn.rollback()
                 timed_out = "statement timeout" in str(e).lower()
                 # a labelled outcome, never a silent gap
                 return {"Plan": {"Node Type": "NotExplained"},
