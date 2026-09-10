@@ -610,18 +610,31 @@ class IndexTuningEnv:
         """
         if self._primed:
             return
+        # Priming RUNS the workload, so on a write workload it mutates too -- and it
+        # runs before the baseline, meaning anything it left behind would be measured
+        # as part of the starting state. Same protocol as _measure: do it inside a
+        # transaction and throw the transaction away.
+        mutating = self.task.benchmark in MUTATING
         with self.conn.cursor() as c:
             c.execute(f"SET statement_timeout = '{int(self.query_timeout_s * 1000)}'")
+            if mutating:
+                c.execute("BEGIN")
             for q in self.queries:
                 try:
+                    if mutating:
+                        c.execute("SAVEPOINT gendba_prime")
                     _run(c, q["text"])
+                    if mutating:
+                        c.execute("RELEASE SAVEPOINT gendba_prime")
                 except Exception:
                     try:
-                        self.conn.rollback()
+                        if mutating:
+                            c.execute("ROLLBACK TO SAVEPOINT gendba_prime")
+                        else:
+                            self.conn.rollback()
                     except Exception:
                         raise      # connection is gone; priming cannot continue
             if mutating:
-                # Undo the workload. This is what keeps before and after comparable.
                 c.execute("ROLLBACK")
             c.execute("SET statement_timeout = 0")
         self._primed = True
