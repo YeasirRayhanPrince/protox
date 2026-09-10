@@ -19,7 +19,13 @@ BUILD=${GENDBA_BUILD:-/mnt/protox}
 TASK="gendba_${BENCH}_${TAG}"
 INI="$REPO/unitune_run/${TASK}.ini"
 
-sed -e "s|^arm_method = .*|arm_method = $RULE|" \
+# output_file is a hardcoded path in the base config, and TopAdvisor.run() loads it
+# as history when it exists (alternative_adviser.py:357). Left shared, the second and
+# third runs would boot pre-seeded with the first run's observations -- which destroys
+# the only property this sweep exists to provide, that the runs differ solely in the
+# arm-selection rule. Give each run its own file.
+sed -e "s|^output_file = .*|output_file = $REPO/unitune_run/logs/${TASK}.res|" \
+    -e "s|^arm_method = .*|arm_method = $RULE|" \
     -e "s|^tuning_budget = .*|tuning_budget = $BUDGET|" \
     -e "s|^sub_budget = .*|sub_budget = $SUB|" \
     -e "s|^task_id = .*|task_id = $TASK|" \

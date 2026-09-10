@@ -70,7 +70,8 @@ def build_episode(db, args_tune, args_db, benchmark):
                            "block_runs": args_tune.get("block_runs"),
                            "init_runs": args_tune.get("init_runs"),
                            "window_size": args_tune.get("window_size"),
-                           "context": args_tune.get("context")}},
+                           "context": args_tune.get("context"),
+                           "output_file": args_tune.get("output_file")}},
         collector="scripts/gendba/unitune_harvest.py")
     conn = psycopg2.connect(
         f"host={args_db['host']} port={args_db['port']} dbname={args_db['dbname']} "
@@ -354,6 +355,7 @@ def main():
 
     observed = round(time.time() - t0, 1)
     limit = float(args_tune.get("tuning_budget", 0))
+    evals = _load_evaluations(args_tune.get("output_file"))
     best = json.loads(json.dumps(getattr(advisor, "best_result", {}), default=str))
     ep.finish(configuration=[{"arm": a, "config": (best.get(a) or {}).get("config")}
                              for a in advisor.arms],
@@ -364,6 +366,9 @@ def main():
                                             (getattr(advisor, "best_result", {})
                                              or {}).get("all")),
                         "best_per_arm": best,
+                        "evaluations": evals,
+                        "n_evaluations": len(evals),
+                        "noise_floor": _repeat_noise(evals),
                         "action_sequence": list(getattr(advisor, "action_sequence", [])),
                         "pulls": state_pulls(advisor),
                         "provenance": MEASURED,
@@ -392,9 +397,86 @@ def main():
         print(f"    [{f.level}:{f.check}] {f.detail}")
 
 
+def _load_evaluations(path):
+    """
+    Every configuration UniTune actually measured, from its own history file.
+
+    Each pull runs several real evaluations -- build the indexes or apply the knobs,
+    then time the whole workload -- but the episode otherwise keeps only the best
+    before and after each pull. That discards most of what was measured. These are
+    <configuration, measured latency, storage cost> triples, which is the same shape
+    the rest of the corpus trades in, so they are captured rather than summarised.
+    """
+    import ast
+    out = []
+    if not path or not os.path.exists(path):
+        return out
+    for line in open(path):
+        line = line.strip()
+        if not line:
+            continue
+        kind, body = "evaluation", line
+        if "|" in line[:20]:
+            kind, body = line.split("|", 1)
+        try:
+            d = ast.literal_eval(body)
+        except (ValueError, SyntaxError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        out.append({"kind": kind,
+                    "arm": d.get("arm"),
+                    "configuration": d.get("configuration") or d.get("config"),
+                    "workload_ms": _ms(d.get("time_cost")),
+                    "storage_mb": d.get("space_cost"),
+                    "seconds_spent": d.get("time_spent"),
+                    "provenance": MEASURED})
+    return out
+
+
+def _repeat_noise(evals):
+    """
+    The noise floor, measured rather than assumed: the spread across evaluations of
+    the SAME configuration. UniTune re-measures a configuration it has already tried,
+    and those repeats bound what a latency difference has to exceed before it means
+    anything. Derived, so it is labelled as such and never mixed with the measurements
+    it is computed from.
+    """
+    import statistics
+    groups = {}
+    for e in evals:
+        if e["kind"] != "evaluation" or e["workload_ms"] is None or not e["configuration"]:
+            continue
+        groups.setdefault(json.dumps(e["configuration"], sort_keys=True), []).append(
+            e["workload_ms"])
+    spreads = [(max(v) - min(v)) / min(v) for v in groups.values() if len(v) > 1]
+    if not spreads:
+        return {"repeated_configurations": 0, "provenance": DERIVED,
+                "note": "no configuration was measured twice; noise floor unknown"}
+    return {"repeated_configurations": len(spreads),
+            "max_relative_spread": round(max(spreads), 4),
+            "median_relative_spread": round(statistics.median(spreads), 4),
+            "provenance": DERIVED,
+            "note": "a latency difference smaller than this is not distinguishable "
+                    "from re-measuring the same configuration"}
+
+
 def _ms(cost):
-    """UniTune carries workload cost in seconds; the corpus records milliseconds."""
-    return None if cost is None else round(float(cost) * 1000.0, 1)
+    """
+    UniTune carries workload cost in seconds; the corpus records milliseconds.
+
+    Some history records carry the cost as a one-element tuple rather than a scalar,
+    so unwrap before converting and return None on anything else -- an unparseable
+    cost is an absent measurement, not a zero.
+    """
+    if isinstance(cost, (tuple, list)):
+        cost = cost[0] if cost else None
+    if cost is None:
+        return None
+    try:
+        return round(float(cost) * 1000.0, 1)
+    except (TypeError, ValueError):
+        return None
 
 
 def _speedup(before, after):
@@ -404,6 +486,10 @@ def _speedup(before, after):
     fabricated 1.0 when either side is missing -- an absent measurement is not a
     null result.
     """
+    if isinstance(before, (tuple, list)):
+        before = before[0] if before else None
+    if isinstance(after, (tuple, list)):
+        after = after[0] if after else None
     if before is None or after is None:
         return None
     try:
