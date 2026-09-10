@@ -163,7 +163,8 @@ def instrument(advisor, ep, rule, checkpoint=None):
     same episode shape describes any of them and they stay comparable -- the only
     thing that differs between two such episodes is HOW the meta-choice was made.
     """
-    state = {"pull": 0, "pending": None, "baseline_cost": None}
+    state = {"pull": 0, "pending": None, "baseline_cost": None,
+             "current_iter": 0}
 
     def record_choice(rule_name, picked, seconds, draws=None, snapshot=None):
         arms = list(advisor.arms)
@@ -218,6 +219,11 @@ def instrument(advisor, ep, rule, checkpoint=None):
             seconds=round(seconds, 2),
             note=("the arms are sub-problems, not candidate actions: this is a "
                   "decision about WHICH PROBLEM to spend the next trial on"))
+        # Remember the iteration this decision carries. The counter is bumped right
+        # after, and the state event that follows must label itself with the SAME
+        # pull as the decision it belongs to -- otherwise joining state to decision,
+        # which is the obvious thing a consumer does, misaligns them by one.
+        state["current_iter"] = state["pull"]
         state["pull"] += 1
 
     def wrap_rule(name, orig):
@@ -297,7 +303,7 @@ def instrument(advisor, ep, rule, checkpoint=None):
                       "error": err, "measured": True},
                      time.time() - t0, "verify", MEASURED, f"unitune:{arm}")
         ep.add("state", "state",
-               payload={"pull": state["pull"], "arm": arm,
+               payload={"pull": state.get("current_iter", state["pull"]), "arm": arm,
                         "best_per_arm": json.loads(json.dumps(
                             getattr(advisor, "best_result", {}), default=str))},
                provenance=MEASURED, produced_by="unitune_topadvisor")
