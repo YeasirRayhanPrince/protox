@@ -23,6 +23,23 @@ LOG=$BUILD/logs/tpcc_setup.log
 
 say() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
 
+# ---- 0. toolchain ------------------------------------------------------
+# BenchBase needs EXACTLY JDK 23. 17 is too old for its -source/-target, and a newer
+# JDK emits a warning that its own -Werror turns into an error; its fmt plugin also
+# breaks on anything newer (hence -Dfmt.skip below). conda-forge is used with
+# --override-channels so no Anaconda Terms of Service acceptance is required.
+source "$BUILD/miniconda3/etc/profile.d/conda.sh"
+if ! conda env list | grep -q "^jvm "; then
+  say "creating the jvm env (openjdk 23 + maven)"
+  conda create -y -n jvm --override-channels -c conda-forge openjdk=23 maven \
+    >> "$LOG" 2>&1 || { say "jvm env creation FAILED"; exit 1; }
+fi
+if [ ! -d "$BB" ]; then
+  say "cloning BenchBase"
+  git clone --depth 1 https://github.com/cmu-db/benchbase.git "$BB" >> "$LOG" 2>&1 \
+    || { say "clone FAILED"; exit 1; }
+fi
+
 # ---- 1. build BenchBase -------------------------------------------------
 # BenchBase HEAD needs EXACTLY JDK 23: 17 is too old for its -source/-target, and a
 # newer JDK makes javac emit a warning that its own -Werror turns into an error. The
