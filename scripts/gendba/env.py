@@ -870,10 +870,18 @@ class IndexTuningEnv:
         return out, {"warmup": self.measure_warmup, "repeats": self.measure_repeats,
                      "statistic": "median", "cache": "warm",
                      "query_timeout_s": self.query_timeout_s,
-                     "censoring": "queries that time out contribute query_timeout_s "
-                                  "to the workload total and are listed in `failed`; "
-                                  "totals are therefore lower bounds on the true cost",
-                     "censored_queries": sorted(failed),
+                     "censoring": "queries that TIME OUT contribute query_timeout_s to "
+                                  "the workload total, so totals are lower bounds. "
+                                  "Queries that ERROR are a different thing: they "
+                                  "contribute what they actually cost before failing "
+                                  "and are NOT censored. Both appear in `failed` with "
+                                  "an `outcome` that distinguishes them.",
+                     # Only genuine timeouts. Listing errors here too would tell a
+                     # reader that an instantly-failing statement is a lower bound on
+                     # a long-running one, which is the opposite of the truth.
+                     "censored_queries": sorted(
+                         q for q, v in failed.items() if v.get("outcome") == "timeout"),
+                     "failed_queries": sorted(failed),
                      "failed": failed}
 
     def dump(self, path, extra=None):
