@@ -23,7 +23,7 @@ DST=${1:-/proj/pmoss-PG0/claude_sessions/latest}
 mkdir -p "$DST"
 rsync -a --delete \
   --exclude '.credentials.json' \
-  --exclude 'sessions/' --exclude '*.key' --exclude '*.pem' \
+  --exclude '*.key' --exclude '*.pem' \
   --exclude 'ide/' --exclude 'cache/' --exclude 'paste-cache/' \
   --exclude 'plugins/' \
   "$SRC/" "$DST/"
