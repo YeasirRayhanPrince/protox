@@ -28,7 +28,7 @@ The guiding commitments, which have survived contact with the data:
 * **Both directions.** Regressions are data. TPC-H `configured` contributes 34 of
   them and is worth keeping for exactly that reason.
 
-## 2. Current state — 283 episodes, all gate clean
+## 2. Current state — 290 episodes, all gate clean
 
 | benchmark | n | task kinds | starting state | median speedup |
 |---|---|---|---|---|
@@ -37,9 +37,21 @@ The guiding commitments, which have survived contact with the data:
 | tpch | 66 | index_selection | configured | 1.000x (34 regressions) |
 | dsb  | 59 | index_selection | pk_only | 1.171x |
 
-Re-gated at the end: **zero failures**, 52 suspect-for-magnitude (all TPC-C, all
-confirmed real — six independent algorithms find `stock(s_i_id)`, and Q16 accounts
-for 104.4 of the 105ms gain).
+(Counts are as of the last full report; the guard's restore of 7 quarantined episodes
+brings the total to 290. Run `scripts/gendba/report.py` on a new machine for the
+current breakdown — it takes minutes, because the DSB relaxation episodes are ~1.2GB
+each.)
+
+Re-gated by the deadline guard at 02:00 on the final day: **238 passed, 52 suspect,
+zero failures**, and 7 episodes RESTORED from quarantine. Those 7 had been rejected
+by a running harvest holding an older copy of the gate in memory; against the current
+gate they pass. Re-gate at the end of every allocation for this reason.
+
+The 52 suspects are all TPC-C and all confirmed real: six independent algorithms find
+`stock(s_i_id)` (45 of 52), and Q16 accounts for 104.4 of the 105ms gain.
+
+Projections at the end: 26,110 tool-call/response turns, 3,382 preference pairs (86
+measured-adjudicated), 290 measured outcomes.
 
 The headline measurement, unchanged all session: of 86 rejected near-misses that were
 actually measured, **37 (43%) were wrong to reject**, the best 59% faster than the
@@ -126,7 +138,78 @@ are atomic, so a killed harvest is safe to relaunch.
 * **Bao, dexter, cophy_input.** Need a patched PostgreSQL, a Ruby binary, and a MIP
   solver respectively. See the roadmap memory.
 
-## 7. What to do next, in priority order
+## 7. NEXT STEP: run Proto-X itself
+
+**We ran Proto-X's baselines all allocation and never ran Proto-X.** All 290 episodes
+come from scripted algorithms (ISE x6) plus a bandit meta-policy (UniTune) plus a
+hand-written QO policy. The paper's own system produced none of them. That is the
+single biggest hole in the corpus, and it is the next thing to do.
+
+### Why it matters more than another baseline
+
+Every episode we have is **single-shot**: a policy is asked once for a configuration,
+it answers, we measure. Proto-X is an RL agent that takes a SEQUENCE of actions
+against a live database, sees the reward of each, and adapts — so it produces
+**multi-step trajectories with intermediate rewards**, which is the shape that
+matters for RL with tool calls and which nothing in the corpus currently has. It also
+tunes knobs and indexes together in one action space, and its action embeddings are
+themselves a learned artifact worth recording.
+
+### It is already set up and was verified on this hardware
+
+`docs/cloudlab_setup.md` section 8 has the exact commands and section 12 records the
+verified deployment on the Clemson r650. Smoke test first — it is not optional, it
+exercises the whole DB lifecycle (untar, start, run, index DDL, restart, reset) in
+~30 minutes and is where every path mistake surfaces:
+
+```bash
+ray start --head --num-cpus=1
+python3 hpo.py --config $PWD/configs/config.yaml --agent wolp \
+  --model-config $PWD/configs/wolp_params.yaml \
+  --benchmark-config $PWD/configs/benchmark/job_full.yaml \
+  --mythril-dir $PWD --num-trials 1 --max-concurrent 1 \
+  --max-iterations 20 --horizon 5 --duration 0.5 --target latency \
+  --data-snapshot-path /mnt/protox/data/job.tgz \
+  --workload-timeout 600 --timeout 15 \
+  --benchbase-config-path $PWD/stub_benchbase.xml \
+  --initial-configs initial_job.json --initial-repeats 1
+# full run: same command with --duration 30.0 --max-iterations 1000
+```
+
+### Proto-X traps, all of which cost time before
+
+* **Paths are relative or absolute, never both.** `config`, `benchmark_config`,
+  `model_config` and `data_snapshot_path` are prefixed with `mythril_dir`
+  unconditionally, so they must be RELATIVE. `execute_query_*` must be ABSOLUTE.
+* **`agents/hpo.py:60` overwrites the YAML's `query_spec` from `params.json`.**
+  Editing the YAML alone silently does nothing.
+* **The stub benchbase XML needs `<transactiontypes>`.** Without it you get a
+  TypeError *after* the baseline has already run — minutes of work thrown away.
+* **Ray writes to the NFS home by default.** Set `TUNE_RESULT_DIR` and symlink to
+  `/mnt/protox/ray_results`, or the run is both slow and lost on teardown.
+* **Do NOT install hypopg on the Proto-X cluster.** It adds
+  `pg_stat_user_tables_..._hypopg_hidden_indexes` to the snapshot and breaks
+  Proto-X's state space with a KeyError. This is why 5492 has hypopg dropped.
+
+### The harness work to turn its output into episodes
+
+Proto-X does not emit our record format, so this is the real task — budget for it
+rather than assuming the run is the work. Per Ray trial you get
+(`docs/cloudlab_setup.md` section 9): `output.log` with every action and every
+`Benchmark iteration with metric` line (this is the tuning trace), `tboard/` scalars
+plus action embeddings, and `repository/<timestamp>/act_sql.txt` holding the exact
+`CREATE INDEX` and `knob = value` for each evaluated configuration.
+
+Map those onto the six moves: each RL step is a DECIDE (the action, with the
+embedding as its discriminant) plus an APPLY AND MEASURE (act_sql.txt and the
+measured metric). Move 3 (SCREEN CHEAPLY) is **absent** — Proto-X measures every
+action for real — and must be recorded absent with that reason, exactly as the ISE
+algorithms record Move 2 absent. Write `scripts/gendba/protox_harvest.py` alongside
+the existing harvesters; `record.py` and `validate.py` already handle everything
+except the multi-step shape, which is the one schema question to settle first: an
+RL trajectory is N decisions in ONE episode, not N episodes.
+
+## 8. Then, in priority order
 
 1. **A second write workload, or TPC-C with a less concentrated query mix.** Q16 is
    96% of the current TPC-C workload, so the 67 episodes test one decision well
@@ -143,7 +226,7 @@ are atomic, so a killed harvest is safe to relaunch.
    partition-wise joins), not just access paths. Needs a new harness.
 5. **Storage layout / Parquet.** The paper's third task, still at zero episodes.
 
-## 8. Where things are
+## 9. Where things are
 
 ```
 /proj/pmoss-PG0/protox/
