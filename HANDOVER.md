@@ -30,17 +30,19 @@ The guiding commitments, which have survived contact with the data:
 
 ## 2. Current state — 290 episodes, all gate clean
 
-| benchmark | n | task kinds | starting state | median speedup |
-|---|---|---|---|---|
-| job  | 91 | 66 index_selection, 23 query_optimization, 2 multi_component | pk_only | 1.673x |
-| tpcc | 67 | index_selection | configured | 24.954x |
-| tpch | 66 | index_selection | configured | 1.000x (34 regressions) |
-| dsb  | 59 | index_selection | pk_only | 1.171x |
+| benchmark | n | task kinds | start | median | regressions |
+|---|---|---|---|---|---|
+| job  | 91 | 66 index_selection, 23 query_optimization, 2 multi_component | pk_only | 1.673x | 3 |
+| tpcc | 67 | index_selection | configured | 24.954x | 8 |
+| tpch | 66 | index_selection | configured | 1.000x | **34** |
+| dsb  | 66 | index_selection | pk_only | 1.173x | 3 |
 
-(Counts are as of the last full report; the guard's restore of 7 quarantined episodes
-brings the total to 290. Run `scripts/gendba/report.py` on a new machine for the
-current breakdown — it takes minutes, because the DSB relaxation episodes are ~1.2GB
-each.)
+Four genuinely different regimes, which is the point: TPC-C has one dominant fixable
+scan, JOB is real index selection, DSB is moderate, and TPC-H `configured` is an
+already-tuned system where 34 of 66 episodes make things WORSE. A policy trained on
+this cannot learn "indexes always help".
+
+The 7 episodes the guard restored were all DSB (59 -> 66).
 
 Re-gated by the deadline guard at 02:00 on the final day: **238 passed, 52 suspect,
 zero failures**, and 7 episodes RESTORED from quarantine. Those 7 had been rejected
