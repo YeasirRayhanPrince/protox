@@ -65,10 +65,20 @@ accepted choice. That is a labelled cost-model error rate on close calls.
 # ~3h, idempotent, resumable. --list shows phases, --from N resumes.
 scripts/cloudlab/provision.sh
 ```
-It builds PostgreSQL 15, the conda envs (`protox`, `ise`, `unitune`), and loads JOB,
-TPC-H and DSB. It does NOT set up TPC-C — that is `scripts/gendba/tpcc_setup.sh`,
-which is self-sufficient (creates its own `jvm` env, clones and builds BenchBase,
-initdbs a cluster on 5493, loads 100 warehouses).
+It builds PostgreSQL 15, the conda envs `protox` and `ise`, and loads JOB, TPC-H and
+DSB. It does NOT set up TPC-C — that is `scripts/gendba/tpcc_setup.sh`, which is
+self-sufficient (creates its own `jvm` env, clones and builds BenchBase, initdbs a
+cluster on 5493, loads 100 warehouses).
+
+**It does NOT create the `unitune` env**, despite an earlier revision of this file
+saying it builds three. `scripts/gendba/run_tpcc.sh` and `unitune_run.sh` both
+`conda activate unitune` and will fail on a freshly provisioned node. Everything else
+in `scripts/gendba/` uses `ise`.
+
+**Never edit `provision.sh` while it is running.** Bash reads a script incrementally
+by byte offset, so an in-place edit makes the live process resume mid-token; this
+killed a run at phase 5 on 2026-09-13 with `ure_logdir: command not found` while the
+file on disk was perfectly valid.
 
 Verify before harvesting: `scripts/gendba/monitor.sh` and a single smoke episode.
 
@@ -79,6 +89,8 @@ scripts/gendba/run_all.sh        # ISE across job/tpch/dsb
 scripts/gendba/run_phase2.sh     # anytime + db2advis
 scripts/gendba/run_tpcc.sh       # TPC-C: loads if needed, derives protocol, harvests
 scripts/gendba/unitune_chain.sh  # meta-decision sweep (ts, rb; alter optional)
+scripts/cloudlab/run_protox.sh   # Proto-X itself: preflight | smoke | full
+scripts/gendba/protox_harvest.py # a finished Ray trial -> one trajectory episode
 scripts/gendba/report.py         # corpus summary
 scripts/gendba/validate.py       # the gate
 scripts/gendba/unitune_compare.py # what the arm-selection rule changed
@@ -165,18 +177,24 @@ exercises the whole DB lifecycle (untar, start, run, index DDL, restart, reset) 
 ~30 minutes and is where every path mistake surfaces:
 
 ```bash
-ray start --head --num-cpus=1
-python3 hpo.py --config $PWD/configs/config.yaml --agent wolp \
-  --model-config $PWD/configs/wolp_params.yaml \
-  --benchmark-config $PWD/configs/benchmark/job_full.yaml \
-  --mythril-dir $PWD --num-trials 1 --max-concurrent 1 \
-  --max-iterations 20 --horizon 5 --duration 0.5 --target latency \
-  --data-snapshot-path /mnt/protox/data/job.tgz \
-  --workload-timeout 600 --timeout 15 \
-  --benchbase-config-path $PWD/stub_benchbase.xml \
-  --initial-configs initial_job.json --initial-repeats 1
-# full run: same command with --duration 30.0 --max-iterations 1000
+scripts/cloudlab/run_protox.sh job preflight   # checks only, launches nothing
+scripts/cloudlab/run_protox.sh job smoke       # ~30 min
+scripts/cloudlab/run_protox.sh job full        # 30 h, 1000 iterations
 ```
+
+**Do not hand-write the `hpo.py` invocation.** Earlier revisions of this file carried
+one and it was wrong in three of four path flags — it passed `$PWD/`-absolute values
+for `--config`, `--benchmark-config` and `--data-snapshot-path`, all three of which
+`agents/hpo.py` prefixes with `mythril_dir` unconditionally, producing
+`/proj/…/protox//proj/…/protox/configs/…`. It also pointed `--config` at
+`configs/config.yaml`, which is deliberately left as the pristine author template;
+the machine-local ones are `configs/config_cloudlab_{job,tpch,dsb}.yaml`. And it
+named a snapshot path that does not exist on a provisioned node.
+
+`run_protox.sh` is that invocation written down once, with a preflight that refuses
+to launch rather than fail 30 h in. Note there are two JOB snapshots and they are not
+interchangeable: `job_base.tgz` is the PK-only base, `job.tgz` has the paper's
+baseline indexes applied and is the one Proto-X starts from.
 
 ### Proto-X traps, all of which cost time before
 
@@ -206,10 +224,48 @@ Map those onto the six moves: each RL step is a DECIDE (the action, with the
 embedding as its discriminant) plus an APPLY AND MEASURE (act_sql.txt and the
 measured metric). Move 3 (SCREEN CHEAPLY) is **absent** — Proto-X measures every
 action for real — and must be recorded absent with that reason, exactly as the ISE
-algorithms record Move 2 absent. Write `scripts/gendba/protox_harvest.py` alongside
-the existing harvesters; `record.py` and `validate.py` already handle everything
-except the multi-step shape, which is the one schema question to settle first: an
-RL trajectory is N decisions in ONE episode, not N episodes.
+algorithms record Move 2 absent.
+
+### DONE (2026-09-13): `scripts/gendba/protox_harvest.py` and the schema decision
+
+**Settled: an RL trajectory is N decisions in ONE episode, not N episodes.** Splitting
+it would destroy the only thing that makes it valuable — step *k*'s action is
+conditioned on the state steps 0..*k*-1 produced, so as standalone episodes each step
+would claim a starting state it did not start from and the credit assignment between
+them becomes unrecoverable.
+
+`record.py` needed **no change**: `events` is already an ordered lossless stream, so N
+steps are N × (decide, apply, verify) groups carrying a step index and a per-step
+measured reward. The task kind stays `multi_component_tuning` — the same task UniTune
+performs, reached by a different method. Method lives in `policy`, not `task`, or a
+consumer cannot compare a bandit against an RL agent on equal terms.
+
+That forced one change in `validate.py`. The `meta_decision` checks demand an accepted
+arm and a rejected set, which is right for a bandit choosing among enumerated
+alternatives and wrong for an agent emitting a point in a continuous space — requiring
+it would make the producer fabricate alternatives that were never scored. Those checks
+now key on the method, and trajectory episodes get their own invariants: contiguous
+step indices, a measured verify per step, terminal counts that agree with the event
+stream, and a `best_step` **recomputed** from the per-step measurements rather than
+restated. Verified against seven mutations of a real record.
+
+Parsing traps, verified against the writers rather than guessed:
+* The baseline marker is **misspelled** `Baseilne Metric` (`tune.py:128`). Grepping
+  for `Baseline` finds nothing.
+* A metric line is paired with the **following** `mv … repository …` line; that
+  pairing is how a measurement is attached to a configuration. Both shipped replayers
+  rely on it.
+* Parse floats with a bounded float pattern, not a character class: the baseline value
+  is followed by a sentence period, so `[-\d.eE+]+` captures `123.5.` and `float()`
+  raises — which silently became "no baseline recorded" until a synthetic-trial test
+  caught it.
+* A query whose latency **equals** the per-query timeout was CENSORED, not failed:
+  its true value is ≥ the limit (`replay_mythril.py:100` detects it the same way).
+
+Still to do: run it against a real trial end to end. The synthetic-trial test covers
+the parsers and the gate; only a real Ray trial exercises `Snapshot` (which restores
+the starting snapshot to fingerprint the environment and initial state) and the
+workload loader.
 
 ## 8. Then, in priority order
 
