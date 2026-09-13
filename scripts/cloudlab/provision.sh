@@ -311,7 +311,14 @@ phase4() {
             > "$LOGDIR/conda_ise.log" 2>&1
     fi
     conda activate "$ENV_ISE"
-    pip install -q psycopg2-binary tqdm >> "$LOGDIR/pip_ise.log" 2>&1
+    # pyyaml is NOT optional: this is the env every scripts/gendba/ harvest runs in,
+    # and env.py, validate.py and protox_harvest.py all import yaml at module scope.
+    # Without it `import harvest` fails outright -- the whole harness is unusable on a
+    # freshly provisioned node. It was absent here because the previous allocation's
+    # env had acquired it by hand, so nothing ever recorded the dependency.
+    pip install -q psycopg2-binary tqdm pyyaml >> "$LOGDIR/pip_ise.log" 2>&1
+    ( cd /tmp && python -c "import psycopg2, yaml" ) \
+        || die "ise env incomplete -- see $LOGDIR/pip_ise.log"
     ok "env '$ENV_ISE' (index_selection_evaluation)"
     conda deactivate
     mark_done 4
