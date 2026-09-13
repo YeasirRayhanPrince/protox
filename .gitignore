@@ -34,3 +34,6 @@ unitune_run/logs/
 # Node-local artifacts copied to /proj so they survive the CloudLab allocation:
 # measured experiment traces and harvest logs. Data, not source.
 node_artifacts/
+
+# envs/spec.py:90 copies the benchbase stub per port into the repo dir.
+stub_benchbase.xml_*

@@ -33,7 +33,9 @@ JOB_DUMP=$PROJ/job_dump
 BUILD=/mnt/protox           # code, postgres, conda, ray results
 DATA=/data/protox           # databases, generated data, snapshots
 STATE=$BUILD/.provision     # phase completion markers
-LOGDIR=$BUILD/logs
+REAL_LOGDIR=$BUILD/logs     # once /mnt is mounted (phase 1)
+BOOT_LOGDIR=/tmp/protox-provision-logs   # before it -- /mnt is root-owned rootfs
+LOGDIR=$BOOT_LOGDIR
 
 PG_VERSION=15.7
 PG_PREFIX=$BUILD/pg15
@@ -132,6 +134,21 @@ snapshot() {
 # =============================================================================
 # PHASE 0 -- preflight
 # =============================================================================
+# Phase 0 runs before phase 1 has provisioned /mnt, so the real log directory does
+# not exist yet and /mnt is root-owned. Log to a bootstrap dir until the mount is
+# real, then switch and carry the bootstrap logs across.
+ensure_logdir() {
+    if mountpoint -q /mnt; then
+        sudo mkdir -p "$REAL_LOGDIR" && sudo chown "$USER" "$REAL_LOGDIR"
+        LOGDIR=$REAL_LOGDIR
+        [[ -d $BOOT_LOGDIR ]] && cp -n "$BOOT_LOGDIR"/* "$LOGDIR"/ 2>/dev/null
+    else
+        mkdir -p "$BOOT_LOGDIR"
+        LOGDIR=$BOOT_LOGDIR
+    fi
+    return 0
+}
+
 phase0() {
     log "PHASE 0: preflight"
     [[ -d $PROJ ]]      || die "$PROJ not mounted"
@@ -142,7 +159,7 @@ phase0() {
     local memgb; memgb=$(free -g | awk '/^Mem:/{print $2}')
     (( memgb >= 60 )) || warn "only ${memgb}GB RAM; knob space allows shared_buffers=32GB"
     ok "proj mounted, job_dump present, sudo ok, ${memgb}GB RAM, ${JOBS} cores"
-    mkdir -p "$LOGDIR"
+    ensure_logdir
 }
 
 # =============================================================================
@@ -159,6 +176,7 @@ phase1() {
         fi
     fi
     mountpoint -q /mnt && ok "/mnt $(df -h /mnt | awk 'NR==2{print $4}') free" || die "could not provision /mnt"
+    ensure_logdir
 
     # Find a whole disk with no partitions and no filesystem -- the spare.
     if ! mountpoint -q /data; then
@@ -166,7 +184,9 @@ phase1() {
         while read -r name type; do
             [[ $type == disk ]] || continue
             [[ -z $(lsblk -no NAME "/dev/$name" | tail -n +2) ]] || continue   # has partitions
-            blkid "/dev/$name" >/dev/null 2>&1 && continue                     # has a filesystem
+            # MUST be sudo: as a normal user blkid exits 0 with no output even on a
+            # blank device, which silently rejects every spare disk. Test the OUTPUT.
+            [[ -n $(sudo blkid "/dev/$name" 2>/dev/null) ]] && continue        # has a filesystem
             spare=$name; break
         done < <(lsblk -dno NAME,TYPE)
         if [[ -n $spare ]]; then
@@ -755,7 +775,7 @@ run_phase() {
     $fn
 }
 
-mkdir -p "$LOGDIR" 2>/dev/null || true
+ensure_logdir
 phase0                      # always -- cheap, and catches a broken node early
 run_phase 1  phase1
 run_phase 2  phase2
