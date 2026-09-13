@@ -224,6 +224,31 @@ mkdir -p "$(dirname "$LOG")"
 log "launching Proto-X: $BENCH / $MODE  (duration=${DURATION}h, horizon=$HORIZON)"
 echo "  log: $LOG"
 
+# ---------------------------------------------------------------------------------
+# Mirror the trial to /proj WHILE IT RUNS, not afterwards.
+#
+# Ray writes every measurement to /mnt/protox/ray_results, which is node-local and
+# dies with the allocation. The episodes themselves already live on /proj, but the
+# RAW artifacts they are derived from -- act_sql.txt, run.plans, run.raw.csv, the
+# state vectors -- would be lost, and with them the ability to apply any future
+# parser fix to this run. Six parser bugs turned up against the first real trial.
+#
+# This is started automatically rather than left as a step to remember, because the
+# failure mode is silent and total: you find out at hour 30, or when the node goes.
+# NO_CHECKPOINT=1 opts out.
+# ---------------------------------------------------------------------------------
+CKPT_PID=""
+if [[ ${NO_CHECKPOINT:-0} != 1 && $MODE != preflight ]]; then
+    CKPT_LOG=$REPO/node_artifacts/logs/protox_checkpoint_${BENCH}_${stamp}.log
+    # Give the trial time to create its directory before the first look.
+    ( sleep 120; exec "$REPO/scripts/gendba/protox_checkpoint.sh" --interval 600 ) \
+        > "$CKPT_LOG" 2>&1 &
+    CKPT_PID=$!
+    ok "checkpoint mirror -> /proj started (pid $CKPT_PID), log: $CKPT_LOG"
+    # Never leave it orphaned polling an finished run.
+    trap '[[ -n $CKPT_PID ]] && kill "$CKPT_PID" 2>/dev/null; rm -f "${SMOKE_INIT:-}"' EXIT
+fi
+
 set -x
 python3 hpo.py \
     --config "configs/config_cloudlab_${BENCH}.yaml" \
