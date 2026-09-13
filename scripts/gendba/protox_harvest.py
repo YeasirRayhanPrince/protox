@@ -555,6 +555,31 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
     after = (best.get("meas") or {}).get("per_query_ms") or {}
     wl_before = base_meas.get("workload_ms")
     wl_after = best.get("metric")
+
+    # A speedup with no baseline to be relative to is not a weak result, it is an
+    # uninterpretable one. Refuse rather than emit an episode whose outcome cannot be
+    # computed -- "can't prove it" is quarantine, not accept.
+    if not before or wl_before is None:
+        raise TraceError(
+            f"{trial}: repository/baseline has no measured run, so no outcome can be "
+            "computed. The trial did not complete its reference run.")
+
+    # A query measured before but absent after (or the reverse) makes the two totals
+    # cover different workloads, and their ratio is then not a speedup at all. The
+    # gate refuses that outright unless the difference is a LABELLED outcome, so
+    # label it here -- with what is actually known, which is only that the query does
+    # not appear in that configuration's run.raw.csv.
+    failed = {}
+    for q in set(before) - set(after):
+        failed[q] = {"outcome": "absent_after",
+                     "reason": "measured in the baseline run but absent from the best "
+                               "step's run.raw.csv",
+                     "baseline_ms": before[q]}
+    for q in set(after) - set(before):
+        failed[q] = {"outcome": "absent_before",
+                     "reason": "measured at the best step but absent from the "
+                               "baseline run.raw.csv",
+                     "after_ms": after[q]}
     speedup = (round(wl_before / wl_after, 4)
                if wl_before and wl_after and wl_after > 0 else None)
 
@@ -585,7 +610,7 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
             "per_query_ms_after": after,
             "speedup": speedup,
             "censored_queries": censored,
-            "failed_queries": {},
+            "failed_queries": failed,
             "best_step": best.get("i"),
             "n_steps": len(steps),
             # The trajectory, projected for consumers that want the reward curve
