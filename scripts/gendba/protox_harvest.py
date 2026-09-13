@@ -293,6 +293,7 @@ def read_raw_csv(d: Path, q_timeout_s: float | None) -> dict:
     if not p.exists():
         return {}
     per_q, censored = {}, {}
+    penalty_ms = 0.0
     with open(p, newline="") as f:
         for row in csv.DictReader(f):
             qid = row.get("Transaction Name")
@@ -300,12 +301,31 @@ def read_raw_csv(d: Path, q_timeout_s: float | None) -> dict:
             if not qid or lat in (None, ""):
                 continue
             ms = float(lat) / 1000.0
+
+            # The PENALTY row (envs/workload.py:699) is written as qid "P" with phase
+            # PENALTY. It is NOT a query: it is a synthetic 3 s (or computed) penalty
+            # added when the workload was cut off early. Recording it among the
+            # per-query latencies would invent a query that does not exist and
+            # corrupt any per-query analysis, so it is kept separately.
+            if (row.get("Phase Id (index in config file)") or "").strip() == "PENALTY" \
+                    or qid == "P":
+                penalty_ms += round(ms, 4)
+                continue
+
             per_q[qid] = round(ms, 4)
             if q_timeout_s and abs(ms - q_timeout_s * 1000.0) < 1e-6:
                 censored[qid] = {"limit_ms": q_timeout_s * 1000.0,
                                  "reason": "per-query timeout reached; true latency >= limit"}
+
+    workload_ms = round(sum(per_q.values()), 4)
     return {"per_query_ms": per_q,
-            "workload_ms": round(sum(per_q.values()), 4),
+            # The sum of REAL query latencies. Proto-X's own metric is this plus the
+            # penalty; both are kept so its metric stays reconstructible without
+            # putting a non-measurement into a measured per-query field.
+            "workload_ms": workload_ms,
+            "penalty_ms": round(penalty_ms, 4),
+            "protox_metric_ms": round(workload_ms + penalty_ms, 4),
+            "stopped_early": penalty_ms > 0,
             "censored": censored}
 
 
@@ -591,14 +611,23 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
                       "q_timeout": st["q_timeout"],
                       "per_query_ms": meas.get("per_query_ms"),
                       "workload_ms": meas.get("workload_ms"),
+                      "penalty_ms": meas.get("penalty_ms"),
+                      "protox_metric_ms": meas.get("protox_metric_ms"),
+                      "stopped_early": meas.get("stopped_early"),
                       "censored": meas.get("censored"),
                       "plans": plans,
                       "state": state},
                      0.0, "verify", MEASURED, "protox:workload.execute")
 
-        if meas.get("workload_ms") is not None:
-            if best["metric"] is None or meas["workload_ms"] < best["metric"]:
-                best = {"i": i, "metric": meas["workload_ms"], "folder": st["folder"],
+        # Rank by Proto-X's OWN metric, not by the sum of executed queries. A step cut
+        # off early has a smaller query sum purely because it ran fewer queries, so
+        # ranking on that would make the worst configurations win. Proto-X's metric
+        # includes the early-kill penalty precisely so that a cut-off run scores
+        # badly, which is the comparison the agent itself optimises.
+        rank = meas.get("protox_metric_ms")
+        if rank is not None:
+            if best["metric"] is None or rank < best["metric"]:
+                best = {"i": i, "metric": rank, "folder": st["folder"],
                         "act": act, "meas": meas}
 
     # ---- Move 6 KEEP OR REVERT: Proto-X resets to the snapshot between episodes
@@ -614,7 +643,7 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
     before = base_meas.get("per_query_ms") or {}
     after = (best.get("meas") or {}).get("per_query_ms") or {}
     wl_before = base_meas.get("workload_ms")
-    wl_after = best.get("metric")
+    wl_after = (best.get("meas") or {}).get("workload_ms")
 
     # A speedup with no baseline to be relative to is not a weak result, it is an
     # uninterpretable one. Refuse rather than emit an episode whose outcome cannot be
@@ -629,19 +658,49 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
     # gate refuses that outright unless the difference is a LABELLED outcome, so
     # label it here -- with what is actually known, which is only that the query does
     # not appear in that configuration's run.raw.csv.
+    # When the workload is cut off (envs/workload.py:614, early_workload_kill), the
+    # queries after the cut-off simply NEVER RAN. Their latency is unknown -- not
+    # zero, not a failure. That is a censored observation at the WORKLOAD level, and
+    # it is the dominant censoring mode here, well ahead of a per-query timeout.
+    stopped_early = bool((best.get("meas") or {}).get("stopped_early"))
     failed = {}
     for q in set(before) - set(after):
-        failed[q] = {"outcome": "absent_after",
-                     "reason": "measured in the baseline run but absent from the best "
-                               "step's run.raw.csv",
-                     "baseline_ms": before[q]}
+        failed[q] = {
+            "outcome": "not_executed" if stopped_early else "absent_after",
+            "reason": ("the workload was cut off before this query ran "
+                       "(early_workload_kill); its latency is UNKNOWN, not zero and "
+                       "not a failure") if stopped_early else
+                      ("measured in the baseline run but absent from the best step's "
+                       "run.raw.csv"),
+            "censored": bool(stopped_early),
+            "baseline_ms": before[q]}
     for q in set(after) - set(before):
         failed[q] = {"outcome": "absent_before",
                      "reason": "measured at the best step but absent from the "
                                "baseline run.raw.csv",
                      "after_ms": after[q]}
-    speedup = (round(wl_before / wl_after, 4)
-               if wl_before and wl_after and wl_after > 0 else None)
+    # THE SPEEDUP MUST BE LIKE-FOR-LIKE.
+    #
+    # When a step is cut off early the baseline covers 113 queries and the step covers
+    # 108, so before/after sums describe DIFFERENT workloads and their ratio is not a
+    # speedup -- it would report an improvement produced entirely by running fewer
+    # queries, and it would be largest exactly when the configuration was worst. That
+    # is the most dangerous kind of wrong number: it looks like a great result.
+    #
+    # So the headline speedup is computed over the queries BOTH runs actually
+    # measured, and the set it covers is recorded alongside it. Proto-X's own metric
+    # comparison is kept too -- that is what the agent optimised, penalty included --
+    # but it is labelled separately rather than conflated with a measured speedup.
+    common = sorted(set(before) & set(after))
+    before_common = round(sum(before[q] for q in common), 4) if common else None
+    after_common = round(sum(after[q] for q in common), 4) if common else None
+    speedup = (round(before_common / after_common, 4)
+               if before_common and after_common and after_common > 0 else None)
+
+    protox_before = base_meas.get("protox_metric_ms")
+    protox_after = (best.get("meas") or {}).get("protox_metric_ms")
+    protox_speedup = (round(protox_before / protox_after, 4)
+                      if protox_before and protox_after and protox_after > 0 else None)
 
     configuration = []
     if best.get("act"):
@@ -669,6 +728,28 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
             "per_query_ms_before": before,
             "per_query_ms_after": after,
             "speedup": speedup,
+            # What the speedup is actually a ratio of. Without this a consumer
+            # reasonably assumes workload_ms_before / workload_ms_after.
+            "speedup_basis": {
+                "kind": "common_query_set",
+                "n_queries": len(common),
+                "queries": common,
+                "workload_ms_before": before_common,
+                "workload_ms_after": after_common,
+                "provenance": DERIVED,
+                "note": "computed over the queries BOTH runs measured. When a run is "
+                        "cut off early the two totals cover different workloads and "
+                        "their ratio is not a speedup.",
+            },
+            # Proto-X's own objective: its metric includes the early-kill penalty.
+            # Kept because it is what the agent actually optimised, and labelled so it
+            # is never mistaken for a measured like-for-like speedup.
+            "protox_metric_ms_before": protox_before,
+            "protox_metric_ms_after": protox_after,
+            "protox_speedup": protox_speedup,
+            "penalty_ms_before": base_meas.get("penalty_ms"),
+            "penalty_ms_after": (best.get("meas") or {}).get("penalty_ms"),
+            "stopped_early_after": stopped_early,
             "censored_queries": censored,
             "failed_queries": failed,
             "best_step": best.get("i"),

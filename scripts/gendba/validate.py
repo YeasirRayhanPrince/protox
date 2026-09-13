@@ -268,26 +268,48 @@ def validate(rec: dict) -> list[Finding]:
 
             # The claimed best step must actually be the best one, recomputed from
             # the measured per-step workload totals in the event stream.
-            per_step = {}
+            # Rank on the same quantity the producer ranks on. A run cut off early has
+            # a smaller query sum purely because it ran fewer queries, so ranking on
+            # workload_ms alone would declare the WORST configurations best -- and a
+            # gate that recomputes with the wrong yardstick raises false alarms while
+            # missing the real ones.
+            per_step, ranked_on = {}, None
             for e in rec["events"]:
                 if e["move"] == "verify" and e["kind"] == "tool_call":
                     s = (e.get("args") or {}).get("step")
-                    w = (e.get("payload") or {}).get("workload_ms")
+                    pl = e.get("payload") or {}
+                    w = pl.get("protox_metric_ms")
+                    if w is None:
+                        w = pl.get("workload_ms")
+                    elif ranked_on is None:
+                        ranked_on = "protox_metric_ms"
                     if s is not None and w is not None:
                         per_step[s] = w
+            ranked_on = ranked_on or "workload_ms"
             if per_step and m.get("best_step") is not None:
                 truly_best = min(per_step, key=lambda k: per_step[k])
                 if truly_best != m["best_step"]:
                     add("fail", "trajectory",
                         f"terminal best_step={m['best_step']} "
                         f"({per_step.get(m['best_step'])} ms) but step {truly_best} "
-                        f"measured {per_step[truly_best]} ms")
-                if m.get("workload_ms_after") is not None and \
-                        abs(per_step[truly_best] - m["workload_ms_after"]) > max(
-                            1.0, per_step[truly_best] * 0.001):
+                        f"measured {per_step[truly_best]} ms (ranked on {ranked_on})")
+
+            # A speedup taken across two different query sets is not a speedup. If the
+            # producer says it used the common set, check it actually did.
+            basis = m.get("speedup_basis") or {}
+            if basis.get("kind") == "common_query_set":
+                b, a = basis.get("workload_ms_before"), basis.get("workload_ms_after")
+                if b and a and m.get("speedup") is not None:
+                    if abs(b / a - m["speedup"]) > max(1e-3, m["speedup"] * 0.001):
+                        add("fail", "trajectory",
+                            f"speedup {m['speedup']} does not equal the basis it "
+                            f"declares ({b}/{a} = {round(b / a, 4)})")
+                bq = set(basis.get("queries") or [])
+                pb, pa = (m.get("per_query_ms_before") or {}), (m.get("per_query_ms_after") or {})
+                if bq and pb and pa and bq != (set(pb) & set(pa)):
                     add("fail", "trajectory",
-                        f"workload_ms_after={m['workload_ms_after']} does not match "
-                        f"the best measured step ({per_step[truly_best]} ms)")
+                        "speedup_basis.queries is not the intersection of the before "
+                        "and after query sets")
     elif bench in BENCH_CFG:
         allowed = _indexable(bench)
         for idx in term.get("configuration", []):
