@@ -28,7 +28,8 @@ set -uo pipefail   # NOT -e: one benchmark failing must not abandon the rest
 
 REPO=/proj/pmoss-PG0/protox
 BUILD=/mnt/protox
-RAY_RESULTS=$BUILD/ray_results
+# Trials are written directly under /proj (run_protox.sh sets TUNE_RESULT_DIR here).
+RAY_RESULTS=$REPO/gendba_records/protox_trials
 EP_DIR=$REPO/gendba_records/episodes
 Q_DIR=$REPO/gendba_records/quarantine
 ISE_PY=$BUILD/miniconda3/envs/ise/bin/python

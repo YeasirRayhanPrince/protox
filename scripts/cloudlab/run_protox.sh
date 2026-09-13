@@ -107,13 +107,18 @@ print(f"  {len(d)} initial config(s) validated")
 PY
 ok "$INIT validated"
 
-# Ray must write to node-local disk. On NFS the run is both slow and lost at teardown.
-export TUNE_RESULT_DIR=$BUILD/ray_results
+# Ray writes the trial directly under /proj, the way the ISE harvest writes its
+# episodes there (harvest.py:548). The dataset -- and the raw trace it is derived
+# from -- lands on the one filesystem that survives the node, AS it is produced, so
+# there is no separate mirror step and nothing to lose if the node dies.
+#
+# Only the ARTIFACTS go to /proj. The live pgdata stays node-local (hpo.py puts it
+# under postgres_path=/mnt/protox/pg15/bin/pgdata<port>), so query latencies are
+# still measured against local disk -- where the artifacts are written cannot change
+# the numbers in the corpus.
+export TUNE_RESULT_DIR=$REPO/gendba_records/protox_trials
 mkdir -p "$TUNE_RESULT_DIR"
-if [[ -e $HOME/ray_results && ! -L $HOME/ray_results ]]; then
-    warn "$HOME/ray_results is a real directory on NFS, not a symlink"
-fi
-ok "TUNE_RESULT_DIR=$TUNE_RESULT_DIR"
+ok "TUNE_RESULT_DIR=$TUNE_RESULT_DIR  (on /proj, alongside the episodes)"
 
 # ---------------------------------------------------------------------------------
 # hypopg: the snapshot must not carry it.
@@ -224,30 +229,11 @@ mkdir -p "$(dirname "$LOG")"
 log "launching Proto-X: $BENCH / $MODE  (duration=${DURATION}h, horizon=$HORIZON)"
 echo "  log: $LOG"
 
-# ---------------------------------------------------------------------------------
-# Mirror the trial to /proj WHILE IT RUNS, not afterwards.
-#
-# Ray writes every measurement to /mnt/protox/ray_results, which is node-local and
-# dies with the allocation. The episodes themselves already live on /proj, but the
-# RAW artifacts they are derived from -- act_sql.txt, run.plans, run.raw.csv, the
-# state vectors -- would be lost, and with them the ability to apply any future
-# parser fix to this run. Six parser bugs turned up against the first real trial.
-#
-# This is started automatically rather than left as a step to remember, because the
-# failure mode is silent and total: you find out at hour 30, or when the node goes.
-# NO_CHECKPOINT=1 opts out.
-# ---------------------------------------------------------------------------------
-CKPT_PID=""
-if [[ ${NO_CHECKPOINT:-0} != 1 && $MODE != preflight ]]; then
-    CKPT_LOG=$REPO/node_artifacts/logs/protox_checkpoint_${BENCH}_${stamp}.log
-    # Give the trial time to create its directory before the first look.
-    ( sleep 120; exec "$REPO/scripts/gendba/protox_checkpoint.sh" --interval 600 ) \
-        > "$CKPT_LOG" 2>&1 &
-    CKPT_PID=$!
-    ok "checkpoint mirror -> /proj started (pid $CKPT_PID), log: $CKPT_LOG"
-    # Never leave it orphaned polling an finished run.
-    trap '[[ -n $CKPT_PID ]] && kill "$CKPT_PID" 2>/dev/null; rm -f "${SMOKE_INIT:-}"' EXIT
-fi
+# No mirror step: Ray already writes the trial under /proj (TUNE_RESULT_DIR above),
+# so every measured step lands on the surviving filesystem as it is produced. This
+# is the same one-step shape the ISE harvest uses -- dataset straight to /proj, no
+# staging. If the node dies mid-run, the completed steps are already durable and the
+# trial is harvestable with --truncated.
 
 set -x
 python3 hpo.py \
