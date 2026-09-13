@@ -10,7 +10,7 @@
 # USAGE
 #   ./run_protox.sh                      # smoke test on JOB (~30 min) -- DO THIS FIRST
 #   ./run_protox.sh job smoke
-#   ./run_protox.sh job full             # the real run: 30 h, 1000 iterations
+#   ./run_protox.sh job full             # the real run: 30 h (duration is the ONLY bound)
 #   ./run_protox.sh tpch full
 #   ./run_protox.sh job preflight        # checks only, launch nothing
 #
@@ -119,14 +119,18 @@ ok "TUNE_RESULT_DIR=$TUNE_RESULT_DIR"
 # hypopg: the snapshot must not carry it.
 #
 # pg_stat_user_tables is a PER-TABLE state source (envs/spaces/utils.py:71), so every
-# table in `public` contributes keys to the agent's state vector. hypopg >=1.4 ships
-# a real table, hypopg_hidden_indexes, which therefore appears in the state and
-# breaks it with a KeyError. provision.sh's bootstrap_db creates hypopg in EVERY
-# snapshot because index_selection_evaluation requires it -- correct for the
-# baselines, wrong for Proto-X.
+# TABLE in `public` contributes keys to the agent's state vector, and an unexpected
+# one breaks it with a KeyError. provision.sh's bootstrap_db creates hypopg in EVERY
+# snapshot because index_selection_evaluation requires it.
 #
-# Checked against the snapshot rather than assumed, because it is cheap here and
-# costs a restored cluster to discover later.
+# MEASURED on hypopg 1.4.3 (2026-09-13): it creates only VIEWS -- hypopg_list_indexes
+# and hypopg_hidden_indexes -- and views do NOT appear in pg_stat_user_tables. So the
+# extension is harmless to the state vector on this version, and the JOB smoke test
+# ran to completion with it installed. HANDOVER.md's blanket "do NOT install hypopg
+# on the Proto-X cluster" is therefore not true here.
+#
+# The check stays because it is cheap and version-dependent: if a future hypopg ships
+# a real table, this names the cause immediately instead of a bare KeyError 30 h in.
 # ---------------------------------------------------------------------------------
 PG_BIN=$BUILD/pg15/bin
 probe_pgd=$DATA/_protox_preflight
@@ -175,17 +179,49 @@ fi
 ray status >/dev/null 2>&1 && ok "ray head up" || die "ray head is not running"
 
 # ------------------------------------------------------------------ launch
+# ---------------------------------------------------------------------------------
+# BOUNDING THE RUN -- neither flag below does what its name suggests.
+#
+# --max-iterations is a NO-OP on this path. It is read only at tune.py:211, inside
+#   tune.py's own __main__ loop. hpo.py/Ray never looks at it.
+#
+# --duration is OVERRIDDEN. initial_*.json is passed as points_to_evaluate, so for
+#   those trials ITS mythril_args win over the command line, and initial_job.json
+#   carries duration: 30.0. hpo.py's only stop condition is
+#   TimeoutChecker(mythril_args["duration"]) (hpo.py:79, :105).
+#
+# Net effect: `smoke` with --duration 0.5 was configured to run for THIRTY HOURS and
+# would never have stopped on its own. Verified on a real trial, whose episode
+# recorded constraint.value = 108000 s.
+#
+# So smoke mode patches duration inside a throwaway copy of the initial configs.
+# Everything else stays identical to the real run -- which is the entire point of a
+# smoke test: bound the clock, change nothing else.
+# ---------------------------------------------------------------------------------
+HORIZON=5; TRIALS=1
 if [[ $MODE == smoke ]]; then
-    DURATION=0.5; MAX_ITER=20; HORIZON=5; TRIALS=1
+    DURATION=0.5
+    SMOKE_INIT=$(mktemp /tmp/protox_initial_smoke_XXXXXX.json)
+    "$CONDA/envs/$ENV_PROTOX/bin/python" - "$REPO/$INIT" "$SMOKE_INIT" "$DURATION" <<'PY'
+import json, sys
+src, dst, dur = sys.argv[1], sys.argv[2], float(sys.argv[3])
+d = json.load(open(src))
+for c in d:
+    c["mythril_args"]["duration"] = dur
+json.dump(d, open(dst, "w"), indent=2)
+print(f"  smoke: duration forced to {dur} h in {len(d)} initial config(s)")
+PY
+    INIT=$SMOKE_INIT
+    trap 'rm -f "$SMOKE_INIT"' EXIT
 else
-    DURATION=30.0; MAX_ITER=1000; HORIZON=5; TRIALS=1
+    DURATION=30.0
 fi
 
 stamp=$(date +%Y%m%d_%H%M%S)
 LOG=$REPO/node_artifacts/logs/protox_${BENCH}_${MODE}_${stamp}.log
 mkdir -p "$(dirname "$LOG")"
 
-log "launching Proto-X: $BENCH / $MODE  (duration=${DURATION}h, max_iterations=$MAX_ITER)"
+log "launching Proto-X: $BENCH / $MODE  (duration=${DURATION}h, horizon=$HORIZON)"
 echo "  log: $LOG"
 
 set -x
@@ -197,7 +233,6 @@ python3 hpo.py \
     --mythril-dir "$REPO" \
     --num-trials "$TRIALS" \
     --max-concurrent 1 \
-    --max-iterations "$MAX_ITER" \
     --horizon "$HORIZON" \
     --duration "$DURATION" \
     --target latency \

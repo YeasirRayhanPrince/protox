@@ -472,7 +472,8 @@ def load_workload(trial: Path, benchmark: str) -> list[dict]:
 # ======================================================================= episode
 def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
                   probe_port: int, duration_h: float | None,
-                  workload_timeout_s: float | None) -> Episode:
+                  workload_timeout_s: float | None,
+                  truncated: bool = False) -> Episode:
     baseline, steps = parse_steps(trial)
     if not steps:
         raise TraceError(f"{trial}: no evaluations with a repository folder")
@@ -782,6 +783,11 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
                     "violated": bool(elapsed and budget and elapsed > budget * 1.10),
                     "note": "wall clock from the baseline run to the last evaluation"},
         trajectory=True,
+        # A run stopped by hand or by the clock did not reach its horizon, so its
+        # last trajectory is incomplete. Saying so is the difference between "the
+        # agent stopped improving here" and "we stopped watching here" -- a consumer
+        # cannot tell them apart from the step count alone.
+        truncated=truncated,
         policy_error=None,
     )
     return ep
@@ -801,6 +807,11 @@ def main():
     ap.add_argument("--probe-port", type=int, default=5448)
     ap.add_argument("--duration-h", type=float, default=None)
     ap.add_argument("--workload-timeout-s", type=float, default=None)
+    ap.add_argument("--truncated", action="store_true",
+                    help="the run was stopped before its horizon/budget (killed by "
+                         "hand, the clock, or a node going away). Stamps the episode "
+                         "so 'the agent stopped improving' is not confused with 'we "
+                         "stopped watching'.")
     ap.add_argument("--dry-run", action="store_true",
                     help="parse and report; write nothing")
     args = ap.parse_args()
@@ -814,7 +825,8 @@ def main():
 
     try:
         ep = build_episode(trial, args.benchmark, snap, args.probe_port,
-                           args.duration_h, args.workload_timeout_s)
+                           args.duration_h, args.workload_timeout_s,
+                           truncated=args.truncated)
     except TraceError as e:
         sys.exit(f"TRACE ERROR: {e}")
 
