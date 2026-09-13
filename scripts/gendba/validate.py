@@ -188,25 +188,106 @@ def validate(rec: dict) -> list[Finding]:
         unknown = arms - {"knob", "index", "query", "view"}
         if unknown:
             add("fail", "configuration", f"unknown arm(s): {sorted(unknown)}")
-        # The meta-decision is the point of the episode: without a recorded choice
-        # there is nothing here that the rest of the corpus does not already have.
-        if not any(e["kind"] == "decision" for e in rec["events"]):
-            add("fail", "meta_decision", "no arm-selection decision was recorded")
-        for e in rec["events"]:
-            if e["kind"] != "decision":
-                continue
-            pl = e.get("payload") or {}
-            if not (pl.get("accepted") or {}).get("arm"):
-                add("fail", "meta_decision", f"event {e['i']}: decision names no arm")
-            if pl.get("rejected") is None:
-                add("fail", "meta_decision",
-                    f"event {e['i']}: no alternatives recorded -- a choice with no "
-                    "alternatives is not a decision")
-            for r in pl.get("rejected") or []:
-                if (r.get("discriminant") or {}).get("criterion") == "unavailable":
-                    add("suspect", "meta_decision",
-                        f"event {e['i']}: discriminant capture failed for "
-                        f"{r.get('arm')!r}; the choice is recorded but not its reason")
+        # The decision checks below split by METHOD, not by task. Two systems perform
+        # this same task in ways whose decisions have genuinely different shapes:
+        #
+        #   UniTune  a bandit meta-policy CHOOSING AN ARM among enumerated
+        #            alternatives -- so an arm and a rejected set must be present.
+        #   Proto-X  an RL agent emitting a point in a continuous joint action
+        #            space -- there is no arm and no enumerated alternative, and
+        #            demanding one would force the producer to fabricate it.
+        #
+        # Requiring the bandit shape of both is what "survive a corpus that is no
+        # longer one episode type" means here.
+        decisions = [e for e in rec["events"] if e["kind"] == "decision"]
+        if not decisions:
+            add("fail", "meta_decision", "no decision was recorded")
+
+        pol_obj = rec.get("policy") or {}
+        is_trajectory = bool(pol_obj.get("trajectory")) or \
+            pol_obj.get("method") == "reinforcement_learning"
+
+        if not is_trajectory:
+            for e in decisions:
+                pl = e.get("payload") or {}
+                if not (pl.get("accepted") or {}).get("arm"):
+                    add("fail", "meta_decision", f"event {e['i']}: decision names no arm")
+                if pl.get("rejected") is None:
+                    add("fail", "meta_decision",
+                        f"event {e['i']}: no alternatives recorded -- a choice with no "
+                        "alternatives is not a decision")
+                for r in pl.get("rejected") or []:
+                    if (r.get("discriminant") or {}).get("criterion") == "unavailable":
+                        add("suspect", "meta_decision",
+                            f"event {e['i']}: discriminant capture failed for "
+                            f"{r.get('arm')!r}; the choice is recorded but not its reason")
+        else:
+            # ---- trajectory invariants -----------------------------------
+            # An RL trajectory is N decisions in ONE episode. These checks exist
+            # because the multi-step shape is the only reason to collect it: a
+            # trajectory whose steps are not ordered, not measured, or not
+            # consistent with its own summary is worth less than nothing, since a
+            # consumer cannot tell it apart from a good one.
+            steps = [(e, (e.get("payload") or {}).get("step")) for e in decisions]
+            if any(s is None for _, s in steps):
+                add("fail", "trajectory",
+                    "a decision in a trajectory episode carries no step index")
+            else:
+                idx = [s for _, s in steps]
+                if idx != list(range(len(idx))):
+                    add("fail", "trajectory",
+                        f"step indices are not contiguous from 0: {idx[:12]}"
+                        f"{'...' if len(idx) > 12 else ''}")
+
+            if len(decisions) < 2:
+                add("fail", "trajectory",
+                    f"only {len(decisions)} step recorded -- a single-step trajectory "
+                    "is a single-shot episode and adds nothing the corpus lacks")
+
+            # Every step must be MEASURED. Proto-X does no what-if screening, so a
+            # step with no measurement is a gap, not a cheap estimate.
+            verified = {(e.get("args") or {}).get("step")
+                        for e in rec["events"]
+                        if e["move"] == "verify" and e["kind"] == "tool_call"
+                        and e.get("provenance") == "measured"}
+            missing = [s for _, s in steps if s is not None and s not in verified]
+            if missing:
+                add("fail", "trajectory",
+                    f"steps with no measured verify event: {sorted(missing)[:12]}")
+
+            # Internal consistency against the terminal summary, recomputed rather
+            # than restated -- a summary that agrees with itself proves nothing.
+            sm = m.get("step_metrics") or []
+            if m.get("n_steps") is not None and m["n_steps"] != len(decisions):
+                add("fail", "trajectory",
+                    f"terminal n_steps={m['n_steps']} but {len(decisions)} decisions "
+                    "were recorded")
+            if sm and len(sm) != len(decisions):
+                add("fail", "trajectory",
+                    f"step_metrics has {len(sm)} entries for {len(decisions)} steps")
+
+            # The claimed best step must actually be the best one, recomputed from
+            # the measured per-step workload totals in the event stream.
+            per_step = {}
+            for e in rec["events"]:
+                if e["move"] == "verify" and e["kind"] == "tool_call":
+                    s = (e.get("args") or {}).get("step")
+                    w = (e.get("payload") or {}).get("workload_ms")
+                    if s is not None and w is not None:
+                        per_step[s] = w
+            if per_step and m.get("best_step") is not None:
+                truly_best = min(per_step, key=lambda k: per_step[k])
+                if truly_best != m["best_step"]:
+                    add("fail", "trajectory",
+                        f"terminal best_step={m['best_step']} "
+                        f"({per_step.get(m['best_step'])} ms) but step {truly_best} "
+                        f"measured {per_step[truly_best]} ms")
+                if m.get("workload_ms_after") is not None and \
+                        abs(per_step[truly_best] - m["workload_ms_after"]) > max(
+                            1.0, per_step[truly_best] * 0.001):
+                    add("fail", "trajectory",
+                        f"workload_ms_after={m['workload_ms_after']} does not match "
+                        f"the best measured step ({per_step[truly_best]} ms)")
     elif bench in BENCH_CFG:
         allowed = _indexable(bench)
         for idx in term.get("configuration", []):
