@@ -370,6 +370,29 @@ def read_metrics(d: Path) -> dict | None:
         return None
 
 
+def read_prior_state(d: Path) -> dict | None:
+    """
+    prior_state.txt (envs/repository.py:36) is the state the agent OBSERVED before it
+    acted -- a python repr of (knob_dict, indexes). This is Move 1 ORIENT for the
+    step: the DBA's "what am I working with" look, taken from the configuration the
+    previous step left in place. dba_loop.md Move 6->Move 1: the accepted config
+    becomes the state Move 1 of the next iteration observes.
+    """
+    p = d / "prior_state.txt"
+    if not p.exists():
+        return None
+    raw = p.read_text(errors="replace")
+    try:
+        val = ast.literal_eval(raw)
+        knobs, indexes = (val[0], val[1]) if isinstance(val, tuple) and len(val) >= 2 \
+            else (val, None)
+        return {"knobs": knobs, "indexes": indexes}
+    except Exception:
+        # Kept whole rather than dropped: an unparsed prior state is still the
+        # orient signal, and a future parser fix can recover it (persist raw).
+        return {"raw": raw[:200000]}
+
+
 # ================================================================ initial state
 class Snapshot:
     """
@@ -529,11 +552,27 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
         ep.fingerprint_environment(snap.conn, snapshot=snapshot_tgz)
         ep.set_initial_state(snap.conn)
 
-    # ---- Move 1 ORIENT: the baseline run is the agent's first look at the system.
+    # Header blocks the ISE episodes carry (223 of 265 do); brought in for format
+    # parity so a trajectory record is comparable field-for-field to a single-shot one.
+    # The action space is JOINT here -- indexes AND knobs -- which is what makes
+    # Proto-X's task multi_component rather than pure index selection.
+    first_act = read_act_sql(trial / "repository" / steps[0]["folder"])
+    ep.header["action_space"] = {
+        "source": "Proto-X joint index+knob action space (agents/wolp)",
+        "kind": "joint(index, knob)",
+        "n_knob_dimensions": len(first_act["knobs"]),
+        "n_indexable_tables": len(ep.header.get("initial_state", {}).get("tables", [])),
+        "note": "a Proto-X action sets one index plus every tunable knob at once; the "
+                "index half is drawn from the pre-trained embedder's column space, "
+                "not the full indexable-column set the ISE algorithms use",
+    }
+    ep.header["tool_vocabulary"] = ["OBSERVE", "REALIZE", "PROBE"]
+
+    # ---- Move 1 ORIENT (episode start): the baseline run is the agent's first look.
     base_dir = trial / "repository" / "baseline"
     base_meas = read_raw_csv(base_dir, q_timeout) if base_dir.exists() else {}
     ep.add("orient", "tool_call", verb="OBSERVE",
-           args={"source": "repository/baseline"},
+           args={"source": "repository/baseline", "scope": "baseline"},
            payload={"baseline_metric": (baseline or {}).get("metric"),
                     "baseline_reward": (baseline or {}).get("reward"),
                     "per_query_ms": base_meas.get("per_query_ms"),
@@ -563,22 +602,54 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
         plans = read_plans(d)
         state = read_metrics(d)
 
-        # A boundary means the environment was RESET (envs/pg_env.py:300): the next
-        # action is not conditioned on the previous one. Recorded as a state event so
-        # a consumer segmenting the trajectory does not have to infer it from the
-        # step numbering -- and cannot miss it.
-        if st.get("rl_episode") is not None and st["rl_episode"] != prev_rl_episode:
-            ep.add("state", "state",
-                   payload={"event": "rl_episode_boundary",
-                            "rl_episode": st["rl_episode"],
-                            "first_step": i,
-                            "note": "Proto-X ended the previous RL episode at the "
-                                    "horizon and reset the environment; steps before "
-                                    "and after this point are SEPARATE trajectories "
-                                    "and the later action is not conditioned on the "
-                                    "earlier state"},
-                   provenance=DERIVED, produced_by="protox:pg_env.reset")
+        boundary = (st.get("rl_episode") is not None
+                    and st["rl_episode"] != prev_rl_episode)
+
+        # ---- Move 6 KEEP OR REVERT (recorded BEFORE this step's orient, because it
+        # is what set up the state this step observes). Proto-X DOES perform Move 6
+        # (dba_loop.md 3 gives it a checkmark): within a horizon the accepted config
+        # is KEPT and becomes the next step's orient; at the horizon it is REVERTED --
+        # envs/pg_env.py:300 resets the database from the snapshot. Recording it is
+        # what makes this a trajectory rather than independent (problem, answer) pairs.
+        if i > 0:
+            if boundary:
+                ep.add("state", "state",
+                       payload={"event": "revert",
+                                "rl_episode": st["rl_episode"],
+                                "first_step": i,
+                                "note": "horizon reached: the previous RL episode's "
+                                        "configuration was REVERTED (database reset to "
+                                        "the snapshot). Steps before and after this "
+                                        "point are SEPARATE trajectories; the action "
+                                        "below is not conditioned on the earlier state"},
+                       provenance=DERIVED, produced_by="protox:pg_env.reset")
+            else:
+                ep.add("state", "state",
+                       payload={"event": "keep",
+                                "step": i - 1,
+                                "rl_episode": st.get("rl_episode"),
+                                "note": "the previous step's configuration was KEPT and "
+                                        "is the state this step observes"},
+                       provenance=DERIVED, produced_by="protox:pg_env")
+        if boundary:
             prev_rl_episode = st["rl_episode"]
+
+        # ---- Move 1 ORIENT (per step): the pg_stat_* state + config the agent saw
+        # before choosing this action. Sourced from prior_state.txt, which is exactly
+        # the pre-action state (envs/repository.py:36).
+        # prior_state.txt is the PRE-action state (config + indexes). The pre-action
+        # pg_stat_* vector is the previous step's MEASURED result, already recorded in
+        # its verify event, so it is referenced rather than duplicated (it is 490 keys
+        # per step) -- and read_metrics(d) is deliberately NOT used here, since that is
+        # the POST-action vector and belongs to Move 5, not Move 1.
+        prior = read_prior_state(d)
+        ep.add("orient", "tool_call", verb="OBSERVE",
+               args={"step": i, "scope": "pre_action", "source": "prior_state.txt"},
+               payload={"prior_config": prior,
+                        "prior_state_vector_ref":
+                            ("baseline" if i == 0
+                             else f"verify event of step {i - 1}")},
+               duration_s=0.0, provenance=MEASURED, produced_by="protox:pg_stat")
 
         ep.add("decide", "decision",
                payload={"step": i,
@@ -631,14 +702,10 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
                 best = {"i": i, "metric": rank, "folder": st["folder"],
                         "act": act, "meas": meas}
 
-    # ---- Move 6 KEEP OR REVERT: Proto-X resets to the snapshot between episodes
-    # rather than reverting a chosen configuration, so there is no keep/revert
-    # judgement to record. Stated rather than left as a silent gap.
-    ep.absent("verify",
-              "Proto-X does not keep-or-revert a final configuration: each RL episode "
-              "resets the database from the snapshot, so no applied change is ever "
-              "assessed and rolled back.",
-              produced_by="protox_wolp")
+    # Move 6 is NOT recorded here: it is emitted per step in the loop above (keep
+    # within a horizon, revert at a boundary), which is where the keep/revert
+    # decision actually happens. The final step's configuration is left in place by
+    # the run; whether it is ultimately kept is the terminal outcome below.
 
     # ---- terminal ----------------------------------------------------------
     before = base_meas.get("per_query_ms") or {}

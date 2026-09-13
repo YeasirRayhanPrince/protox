@@ -264,3 +264,72 @@ tell that apart from healthy work. `scripts/gendba/monitor.sh` polls episode cou
 idle time, log errors and the longest-running query in `pg_stat_activity`, and exits
 with distinct codes for stalled / errored / died-early. Every harvest stage runs under
 one.
+
+---
+
+## 7. Proto-X trajectory episodes (`scripts/gendba/protox_harvest.py`)
+
+Proto-X is the first RL policy in the corpus. Everything else is single-shot: asked
+once for a configuration, measured once. Proto-X takes a *sequence* of actions
+against a live database and adapts, so its record is a **trajectory**, and that shape
+is the reason to collect it — Gen-DBA is meant to learn the loop, not just the answer.
+
+### 7.1 One trial = one episode = N steps
+
+An RL trajectory is N decisions in ONE episode, not N episodes. Step *k*'s action is
+conditioned on the state steps 0..*k*-1 produced; split into N episodes, each step
+would claim a starting state it did not start from and the credit assignment between
+them — the point of collecting it — is lost. `record.py` needs no change: `events`
+is already an ordered lossless stream.
+
+A single Ray trial contains SEVERAL RL episodes: `envs/pg_env.py:520` ends one at
+`current_step >= horizon` and the environment resets. That boundary is recorded (a
+`revert` state event); steps either side of it are separate trajectories.
+
+### 7.2 The six moves, per step
+
+Each RL step emits, in order:
+
+| Move | Present? | Source | provenance |
+|---|---|---|---|
+| 1 ORIENT | ✅ pre-action state (config + indexes) | `prior_state.txt` (`baseline` for step 0) | measured |
+| 2 HYPOTHESIZE | ❌ absent + reason | — | — |
+| 3 SCREEN | ❌ absent + reason | — | — |
+| 4 DECIDE | action only, no `rejected[]` + reason | `act_sql.txt` | — |
+| 5a APPLY | index DDL + every knob | `act_sql.txt` | declared |
+| 5b MEASURE | per-query ms, penalty, plans (est-vs-actual), state vector | `run.raw.csv`, `run.plans`, `run.metrics.json` | measured |
+| 6 KEEP/REVERT | ✅ kept within a horizon, reverted at a boundary | derived (`pg_env.reset`) | derived |
+
+2 and 3 are absent because Proto-X emits an action from a policy network (no stated
+hypothesis) and measures every action for real (no what-if screening). Absent, per
+the corpus rule, never synthesised. 4 carries the action but no enumerated
+alternatives — an RL action is a point in a continuous space, not a choice among
+scored candidates — so no `rejected[]` is fabricated.
+
+Move 6 is genuinely PRESENT here (`dba_loop.md` 3 gives it a checkmark), and an
+earlier version of the harvester wrongly recorded it absent: within a horizon the
+accepted config is kept and becomes the next step's orient; at the horizon it is
+reverted. That keep/revert chain is exactly what makes the record a trajectory.
+
+### 7.3 Measurement traps specific to Proto-X (found against the first real trial)
+
+- **The baseline is not step 0.** The `Baseilne Metric` marker (misspelled in
+  `tune.py:128`) is logged AFTER the baseline evaluation, so everything before it is
+  skipped; a `repository/baseline` folder is never a step.
+- **The PENALTY row is not a query.** A cut-off workload appends a synthetic `P` row
+  (`workload.py:699`); it is kept as `penalty_ms`, out of the per-query latencies.
+  `workload_ms + penalty_ms` reconstructs Proto-X's own metric to the millisecond.
+- **The speedup is like-for-like.** When a run is cut off, baseline and step cover
+  different query sets, so the headline speedup is taken over the queries BOTH
+  measured (`speedup_basis`); Proto-X's own metric ratio is kept separately.
+- **`best_step` ranks on Proto-X's metric**, which includes the penalty, so a cut-off
+  step cannot win by running fewer queries.
+- **hypopg 1.4.3 is harmless** to the state vector: it ships views, not tables, so it
+  does not enter `pg_stat_user_tables`. No hypopg-free snapshot is needed on this
+  version. Checked, not assumed.
+
+### 7.4 Header parity
+
+Trajectory episodes carry `action_space` (the joint index+knob space: ~2491 knob
+dimensions) and `tool_vocabulary` (`OBSERVE`, `REALIZE`, `PROBE`), matching the ISE
+episodes so a record is comparable field-for-field regardless of the system.
