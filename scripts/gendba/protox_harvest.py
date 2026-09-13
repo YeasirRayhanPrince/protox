@@ -153,6 +153,16 @@ _METRIC_RE = re.compile(
     rf"\(reward:\s*(?P<reward>{_FLOAT}|nan|None)\)\s+"
     r"\(q_timeout:\s*(?P<qt>[^)]*)\)")
 
+# tune.py:133. One Ray trial contains SEVERAL RL episodes: envs/pg_env.py:520 ends an
+# episode at `current_step >= horizon`, and the env then resets. Steps either side of
+# that boundary are NOT one continuous trajectory -- pg_env.reset() either restores
+# the pristine snapshot or shifts the database to a requested configuration, so step
+# k+1 is not conditioned on step k's state across a boundary.
+#
+# Recording the boundary is the whole point: without it a consumer reads N*horizon
+# steps as one trajectory and the conditioning it infers is false.
+_EPISODE_RE = re.compile(r"Starting episode:\s*(?P<ep>\d+),\s*iteration:\s*(?P<it>\d+)")
+
 
 def parse_steps(trial: Path) -> tuple[dict | None, list[dict]]:
     """
@@ -167,6 +177,7 @@ def parse_steps(trial: Path) -> tuple[dict | None, list[dict]]:
     baseline = None
     steps: list[dict] = []
     pending = None
+    cur_episode = cur_iteration = None
 
     # ORDERING, verified against a real trial -- it is not what it looks like.
     #
@@ -203,6 +214,12 @@ def parse_steps(trial: Path) -> tuple[dict | None, list[dict]]:
             # Pre-marker: the baseline evaluation and its mv. Not a step.
             continue
 
+        e = _EPISODE_RE.search(line)
+        if e:
+            cur_episode = int(e.group("ep"))
+            cur_iteration = int(e.group("it"))
+            continue
+
         m = _METRIC_RE.search(line)
         if m:
             try:
@@ -214,7 +231,8 @@ def parse_steps(trial: Path) -> tuple[dict | None, list[dict]]:
             except ValueError:
                 reward = None
             pending = {"metric": float(m.group("metric")), "reward": reward,
-                       "q_timeout": qt, "line": line.strip()}
+                       "q_timeout": qt, "line": line.strip(),
+                       "rl_episode": cur_episode, "rl_iteration": cur_iteration}
             continue
 
         if pending is not None and "mv" in line and "repository" in line:
@@ -516,6 +534,7 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
 
     # ---- The trajectory: N x (decide, apply, verify), each tagged with its step.
     best = {"i": None, "metric": None}
+    prev_rl_episode = None
     for i, st in enumerate(steps):
         d = trial / "repository" / st["folder"]
         act = read_act_sql(d)
@@ -523,8 +542,27 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
         plans = read_plans(d)
         state = read_metrics(d)
 
+        # A boundary means the environment was RESET (envs/pg_env.py:300): the next
+        # action is not conditioned on the previous one. Recorded as a state event so
+        # a consumer segmenting the trajectory does not have to infer it from the
+        # step numbering -- and cannot miss it.
+        if st.get("rl_episode") is not None and st["rl_episode"] != prev_rl_episode:
+            ep.add("state", "state",
+                   payload={"event": "rl_episode_boundary",
+                            "rl_episode": st["rl_episode"],
+                            "first_step": i,
+                            "note": "Proto-X ended the previous RL episode at the "
+                                    "horizon and reset the environment; steps before "
+                                    "and after this point are SEPARATE trajectories "
+                                    "and the later action is not conditioned on the "
+                                    "earlier state"},
+                   provenance=DERIVED, produced_by="protox:pg_env.reset")
+            prev_rl_episode = st["rl_episode"]
+
         ep.add("decide", "decision",
                payload={"step": i,
+                        "rl_episode": st.get("rl_episode"),
+                        "rl_iteration": st.get("rl_iteration"),
                         "accepted": {"index_sql": act["index_sql"],
                                      "n_knobs": len(act["knobs"])},
                         # An RL action is a point sampled from a continuous space:
@@ -639,7 +677,14 @@ def build_episode(trial: Path, benchmark: str, snapshot_tgz: str,
             # without walking the event stream. Derived from the events above, and
             # labelled as such.
             "step_metrics": [{"step": i, "metric": s["metric"], "reward": s["reward"],
+                              "rl_episode": s.get("rl_episode"),
                               "repository": s["folder"]} for i, s in enumerate(steps)],
+            # One Ray trial contains several RL episodes (horizon-length trajectories
+            # separated by an environment reset). Both projections are recoverable
+            # from the event stream; this says how many there were without walking it.
+            "n_rl_episodes": len({s.get("rl_episode") for s in steps
+                                  if s.get("rl_episode") is not None}) or None,
+            "horizon": horizon,
             "baseline_metric": (baseline or {}).get("metric"),
             "provenance": MEASURED,
             "protocol": {
