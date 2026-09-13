@@ -168,6 +168,20 @@ def parse_steps(trial: Path) -> tuple[dict | None, list[dict]]:
     steps: list[dict] = []
     pending = None
 
+    # ORDERING, verified against a real trial -- it is not what it looks like.
+    #
+    #   01:24:12  Benchmark iteration with metric 102.684367 (reward: ...)
+    #   01:24:12  Running ['/usr/bin/mv', ..., 'repository//baseline']
+    #   01:24:19  Baseilne Metric: 102.684367. Baseline Reward: 2.0
+    #
+    # The FIRST evaluation is the baseline run itself, and the `Baseilne Metric`
+    # marker is logged AFTER it, not before. So a parser that starts collecting
+    # immediately records the baseline as RL step 0 -- a step with no action and no
+    # act_sql.txt, which shifts every subsequent step index and can win best_step.
+    #
+    # Everything before the marker is therefore skipped. scripts/replay_mythril.py:66
+    # guards this with `start_found` for the same reason; that guard is the point of
+    # the structure, not just a way to grab a start timestamp.
     for line in path.read_text(errors="replace").splitlines():
         if baseline is None and "Baseilne Metric" in line:
             # The misspelling is in tune.py:128. Matching "Baseline" finds nothing.
@@ -183,6 +197,10 @@ def parse_steps(trial: Path) -> tuple[dict | None, list[dict]]:
                             "line": line.strip()}
             except Exception:
                 baseline = {"metric": None, "reward": None, "line": line.strip()}
+            continue
+
+        if baseline is None:
+            # Pre-marker: the baseline evaluation and its mv. Not a step.
             continue
 
         m = _METRIC_RE.search(line)
@@ -210,9 +228,13 @@ def parse_steps(trial: Path) -> tuple[dict | None, list[dict]]:
             if folder is None:
                 m2 = re.search(r"repository/([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9\-]+)", line)
                 folder = m2.group(1) if m2 else None
-            if folder:
+            # Belt and braces: `repository/baseline` is the reference run, never an
+            # action. If it ever appears after the marker, it is still not a step.
+            if folder and folder != "baseline":
                 pending["folder"] = folder
                 steps.append(pending)
+                pending = None
+            elif folder == "baseline":
                 pending = None
 
     return baseline, steps
