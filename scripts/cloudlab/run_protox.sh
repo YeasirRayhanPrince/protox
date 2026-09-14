@@ -199,28 +199,31 @@ ray status >/dev/null 2>&1 && ok "ray head up" || die "ray head is not running"
 # would never have stopped on its own. Verified on a real trial, whose episode
 # recorded constraint.value = 108000 s.
 #
-# So smoke mode patches duration inside a throwaway copy of the initial configs.
-# Everything else stays identical to the real run -- which is the entire point of a
-# smoke test: bound the clock, change nothing else.
+# ONE TRIAL PER RUN. initial_*.json ships FOUR configs, and each is a separate
+# points_to_evaluate trial -- so --num-trials 1 does NOT cap it: Ray runs all four,
+# each for the full `duration`. That is 4 x 30 h = 120 h for a single benchmark,
+# which starves the others. We are harvesting ONE trajectory per benchmark, not
+# doing hyperparameter search, so the run uses only the FIRST config. (Learned the
+# hard way: a job run reached a second 30 h trial before this was caught.)
+#
+# smoke mode additionally patches duration down to 0.5 h -- neither --max-iterations
+# (a no-op on this path, read only at tune.py:211) nor --duration (overridden by the
+# config's own mythril_args) bounds the run, so the bound is set in the config here.
 # ---------------------------------------------------------------------------------
 HORIZON=5; TRIALS=1
-if [[ $MODE == smoke ]]; then
-    DURATION=0.5
-    SMOKE_INIT=$(mktemp /tmp/protox_initial_smoke_XXXXXX.json)
-    "$CONDA/envs/$ENV_PROTOX/bin/python" - "$REPO/$INIT" "$SMOKE_INIT" "$DURATION" <<'PY'
+RUN_INIT=$(mktemp /tmp/protox_initial_XXXXXX.json)
+trap 'rm -f "$RUN_INIT"' EXIT
+if [[ $MODE == smoke ]]; then DURATION=0.5; else DURATION=30.0; fi
+"$CONDA/envs/$ENV_PROTOX/bin/python" - "$REPO/$INIT" "$RUN_INIT" "$DURATION" <<'PY'
 import json, sys
 src, dst, dur = sys.argv[1], sys.argv[2], float(sys.argv[3])
 d = json.load(open(src))
-for c in d:
-    c["mythril_args"]["duration"] = dur
-json.dump(d, open(dst, "w"), indent=2)
-print(f"  smoke: duration forced to {dur} h in {len(d)} initial config(s)")
+one = [d[0]]                       # first config only -> exactly one Ray trial
+one[0]["mythril_args"]["duration"] = dur
+json.dump(one, open(dst, "w"), indent=2)
+print(f"  run: 1 of {len(d)} initial config(s), duration {dur} h -> one trial")
 PY
-    INIT=$SMOKE_INIT
-    trap 'rm -f "$SMOKE_INIT"' EXIT
-else
-    DURATION=30.0
-fi
+INIT=$RUN_INIT
 
 stamp=$(date +%Y%m%d_%H%M%S)
 LOG=$REPO/node_artifacts/logs/protox_${BENCH}_${MODE}_${stamp}.log
