@@ -302,3 +302,42 @@ workload loader.
 
 Branch `gendba-harvest`. The repo lives on `/proj`, so its history survives a node
 dying even unpushed.
+
+---
+
+## 10. Proto-X harvest — RESULTS (2026-09-16)
+
+Proto-X ran for the first time. **3 trajectory episodes** landed (corpus 290 -> 293):
+
+| episode | steps | speedup | notes |
+|---|---|---|---|
+| job (00000) | 921 | **5.50x** | full 30h run; 2.4GB JSON (383M on ZFS) |
+| job (00001) | 154 | 4.73x | 2nd config, truncated when the run was capped |
+| tpch (00000) | 440 | 2.69x | full 30h run, not truncated |
+
+Each is one multi_component_tuning trajectory with the six-move spine
+(orient/decide/apply/measure/keep-revert per step; hypothesize+screen absent).
+
+### Traps hit and fixed
+* **`--num-trials 1` does not cap the run.** initial_*.json has 4 configs, each a
+  points_to_evaluate trial, so Ray runs 4 x `duration`. `run_protox.sh` now trims to
+  the first config -> one trial per benchmark.
+* **dsb needed two yaml keys** (`index_space_aux_brin`, `index_space_aux_md`) hpo.py
+  reads unconditionally. Added (committed).
+
+### dsb via Proto-X is BLOCKED (not done)
+After the yaml keys, dsb dies loading the pretrained embedder
+(`dsb_data_models/curated/model0/embedder_22.pth`):
+
+    size mismatch VAE encoder: checkpoint [256,432] vs current model [256,408]
+
+The checkpoint is for a schema whose index space is 432-dim; the repo's dsb config
+yields 408. Fixing the web_returns list-marker typo (24 cols -> 425) does NOT bridge
+it -- the dim is not the plain column count, and IndexSpace still builds 408. This
+needs the matching embedder or a regenerated one, out of scope here. The earlier
+training_record claim that the dsb embedder "does not contain web_returns" is wrong;
+the checkpoint was trained WITH more columns than the repo now produces.
+
+**To finish dsb later:** reconcile the dsb embedder with the index space dim --
+either locate the embedder that matches the 408-dim repo schema, or regenerate the
+embedder (embeddings/gen_index_data.py) against the current dsb attributes.
