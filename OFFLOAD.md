@@ -149,3 +149,39 @@ benchmark just wastes 30 h and writes a second episode.
   latency: cost, throughput, concurrency; a load-generator harness) over depth.
 
 Branch `gendba-harvest`. Everything is on /proj.
+
+---
+
+## 8. Provisioning / setup status — what a fresh node hits (updated 2026-09-16)
+
+Setting up from the *previous* handoff cost real time this session because assumed
+behavior was written as fact. Most of that is now **fixed at the source and committed**,
+so the next agent should NOT repeat it. What remains is listed honestly.
+
+**Fixed in `provision.sh` / the repo (next node won't hit these):**
+* Two bare-node bugs: phase 0 logging before `/mnt` exists, and the spare-disk probe
+  running `blkid` without sudo (which silently rejected the blank disk). Both patched.
+* `ise` env now installs `pyyaml` and asserts its own imports (the harness could not
+  `import` without it).
+* `run_protox.sh` now exists (the completion banner always pointed at it); the smoke
+  command in the old HANDOVER was wrong in 3 of 4 path flags — replaced.
+* hypopg warning corrected (harmless on 1.4.3).
+
+**Still manual / not auto-provisioned:**
+* **`unitune` conda env** — `provision.sh` builds only `ise` + `protox`. `run_tpcc.sh`
+  and `unitune_run.sh` `conda activate unitune`, which does NOT exist on a fresh node
+  (nor did it on this one — we did not run UniTune). Only needed to RE-RUN UniTune
+  (already harvested, 2 episodes). Recipe if needed: a py3.9/3.10 env + `pip install -r
+  unitune/UniTune/requirements.txt`, the `unitune/open-box-context` package, and
+  `psycopg2-binary pyyaml`. Not built because it was out of scope and unverifiable here.
+* **TPC-C `jvm` env** — created on demand by `scripts/gendba/tpcc_setup.sh` (self-
+  sufficient), so not a gap unless you skip that script.
+* **dsb via Proto-X** — the embedder blocker in §5. Not a provisioning issue.
+
+**Env package snapshots** (captured before the node dies, since envs are node-local):
+`docs/env_snapshots/{protox,ise}_pip_freeze.txt` — exact versions provision produced
+(protox: py3.9, 89 pkgs; ise: py3.10). Reference if a rebuild drifts.
+
+**Not verified:** the two `provision.sh` bare-node fixes are reasoned and committed but
+were patched mid-run this session; a full clean `provision.sh` from bare metal has not
+been re-run end to end since. Expect them to work; watch phase 0–1 on the next node.

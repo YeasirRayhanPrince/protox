@@ -1,0 +1,4 @@
+packaging @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_packaging_1785888127/work
+psycopg2-binary==2.9.13
+PyYAML==6.0.3
+tqdm==4.70.1
