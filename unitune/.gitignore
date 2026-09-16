@@ -1,0 +1,16 @@
+# Run artifacts and generated output that land directly under unitune/ (data, not
+# source). Regenerable from scripts/gendba/unitune_*.sh + the committed base config.
+#
+# NOTE: this file governs ONLY files directly under unitune/. Content INSIDE the
+# submodules (unitune/UniTune, unitune/open-box-context) is NOT covered here -- git
+# delegates that to each submodule's own git, and it is silenced by
+# `ignore = untracked` on those submodules in ../.gitmodules. So the UniTune run logs
+# (unitune/UniTune/logs/*.log) are handled there, not by this file.
+
+*.log
+*.out
+logs/
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
