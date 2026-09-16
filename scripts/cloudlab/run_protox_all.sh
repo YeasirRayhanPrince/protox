@@ -12,10 +12,11 @@
 #   is scored by BenchBase throughput and is not comparable; run_protox.sh refuses it.
 #
 # WHAT EACH RUN PRODUCES
-#   run_protox.sh starts the run AND a background mirror of the raw trial to /proj
-#   (survives the node). When a run finishes, this chain harvests its newest trial
-#   into the corpus through the gate. The raw mirror is the safety net: if a harvest
-#   ever fails, the trial is still on /proj and can be re-harvested.
+#   run_protox.sh writes the trial DIRECTLY under /proj (gendba_records/protox_trials),
+#   so every measured step is durable as it is produced -- no staging, no mirror. When
+#   a run finishes, this chain harvests its newest trial into gendba_records/episodes
+#   through the gate. If a harvest ever fails, the raw trial is still on /proj and can
+#   be re-harvested.
 #
 # TIMING
 #   ~30 h per benchmark, ~90 h total. If the allocation ends mid-run, the in-flight
@@ -53,8 +54,8 @@ for b in "${BENCHES[@]}"; do
     log "==== $b : launching full run ===="
     before=$(newest_trial)
 
-    # run_protox.sh blocks for the whole ~30 h run and starts/stops its own /proj
-    # mirror. A non-zero exit (killed, crashed) still leaves measured steps on disk,
+    # run_protox.sh blocks for the whole ~30 h run, writing the trial under /proj as
+    # it goes. A non-zero exit (killed, crashed) still leaves measured steps on disk,
     # so we fall through to harvest whatever was produced rather than abandon it.
     ./scripts/cloudlab/run_protox.sh "$b" full
     rc=$?
