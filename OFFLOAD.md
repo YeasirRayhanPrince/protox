@@ -79,14 +79,19 @@ session). It dies at startup loading its pretrained embedder:
 size mismatch VAE encoder: checkpoint [256,432] vs current model [256,408]   (Δ 24)
 ```
 
-Diagnosis (confirmed):
-* The shipped embedder `dsb_data_models/curated/model0/embedder_22.pth` was trained on
-  a **curated 136-column schema** (see its `config` → `class_mapping`, 136 entries)
-  that yields a **432-dim** index space.
-* The repo's current dsb config yields **408**. The dim comes from the index-space
-  ENCODING (`envs/spaces/index_policy.py` `OneHotIndexPolicy`: tables ×
-  `max_num_columns` × the aux flags `index_space_aux_{type,brin,include,md}`), NOT the
-  raw column count.
+Diagnosis — VERIFIED facts:
+* The checkpoint expects a **432-dim** index space; the repo's current dsb config
+  builds **408** (both from the error, seen twice).
+* The shipped embedder's `config` → `class_mapping` has **136 entries** (curated
+  table/column pairs) — checked directly.
+* The dim comes from the index-space ENCODING, NOT the raw column count: fixing the
+  web_returns column list (401 → 425 cols) left the dim at 408. The encoding is
+  `envs/spaces/index_policy.py` `OneHotIndexPolicy(tables, max_num_columns, aux_type,
+  aux_brin, aux_include, aux_md)`.
+
+INFERRED, not derived: the exact formula linking the 136-column curated schema to 432
+dims was NOT worked out — I did not compute what config yields 432. That derivation is
+the first task of fix-path 1 below.
 * Two dead ends already tried and reverted/kept:
   * Added the two missing yaml keys `index_space_aux_brin`/`_md` (real bug, **kept** —
     gets past `hpo.py:170`).
@@ -105,8 +110,11 @@ To finish dsb (pick one):
    `embeddings/gen_index_data.py` + the VAE training stage. Hours; the "expensive
    stage" `docs/cloudlab_setup.md §5` says to normally skip.
 
-job and tpch prove the harness is correct end-to-end — dsb is purely this embedder
-reconciliation.
+job and tpch prove the harness is correct end-to-end. The embedder mismatch is the
+**first and only blocker seen** — dsb has never loaded past it, so treat "fix the
+embedder and dsb runs" as unverified: there may be further dsb-specific issues (e.g.
+the web_returns recovery, DSB's `execute_query_*` paths) once it gets further. Not
+proven either way.
 
 ## 6. How to resume Proto-X on a fresh node
 
@@ -116,7 +124,16 @@ scripts/cloudlab/run_protox.sh job preflight  # checks only
 scripts/cloudlab/run_protox.sh job smoke      # ~30 min end-to-end sanity
 scripts/cloudlab/run_protox_all.sh job tpch   # full runs (dsb only after the fix above)
 ```
-Harvest is resumable/idempotent; episodes already on disk are skipped.
+
+**The Proto-X path is NOT resumable — verify before assuming otherwise.** Unlike the
+ISE `harvest.py` (which has `already_collected()` and skips done episodes),
+`protox_harvest.py` and `run_protox_all.sh` have **no skip logic**: passing a benchmark
+re-runs its full 30 h from scratch, and the run itself cannot resume mid-way
+(`hpo.py:130 save_checkpoint` is a no-op). So on resume, pass **only** the benchmarks
+you still need (job and tpch are already harvested — do not re-list them), and if a run
+dies partway, its measured steps are still on /proj: harvest that trial directly with
+`protox_harvest.py --truncated` rather than restarting. Re-running a completed
+benchmark just wastes 30 h and writes a second episode.
 
 ## 7. Honest notes for the next agent
 
