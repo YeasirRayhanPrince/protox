@@ -1,15 +1,20 @@
 [submodule "UDO"]
 	path = UDO
+	ignore = untracked
 	url = https://github.com/17zhangw/UDO
 [submodule "Auto-Steer"]
 	path = Auto-Steer
+	ignore = untracked
 	url = https://github.com/17zhangw/Auto-Steer
 [submodule "index_selection_evaluation"]
 	path = index_selection_evaluation
+	ignore = untracked
 	url = https://github.com/17zhangw/index_selection_evaluation
 [submodule "unitune/open-box-context"]
 	path = unitune/open-box-context
+	ignore = untracked
 	url = https://github.com/17zhangw/open-box-context.git
 [submodule "unitune/UniTune"]
 	path = unitune/UniTune
+	ignore = untracked
 	url = https://github.com/17zhangw/UniTune.git
