@@ -502,6 +502,12 @@ mythril:
 
   index_space_aux_type: False
   index_space_aux_include: True
+  # hpo.py:170-171 reads these unconditionally; job_full.yaml and tpch.yaml both
+  # carry them (False), dsb_s10.yaml did not -- so a Proto-X dsb run died at startup
+  # with KeyError: 'index_space_aux_brin'. Unrelated to the web_returns embedder
+  # caveat (that is the column list, not these aux flags).
+  index_space_aux_brin: False
+  index_space_aux_md: False
 
   # Per-query knobs.
   # Format:
