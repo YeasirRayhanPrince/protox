@@ -1,0 +1,115 @@
+{
+ "trajectories": 1993,
+ "models": {
+  "us.anthropic.claude-opus-4-8": 988,
+  "us.anthropic.claude-opus-4-7": 988,
+  "us.anthropic.claude-opus-4-6-v1": 17
+ },
+ "op_kinds": {
+  "schema_file": "2012 / 4257 = 47.3%",
+  "select": "2006 / 4257 = 47.1%",
+  "distinct_probe": "214 / 4257 = 5.0%",
+  "catalog": "14 / 4257 = 0.3%",
+  "other": "6 / 4257 = 0.1%",
+  "sample": "5 / 4257 = 0.1%"
+ },
+ "sql_statements_total": 2245,
+ "sql_kinds_of_sql_only": {
+  "select": "2006 / 2245 = 89.4%",
+  "catalog": "14 / 2245 = 0.6%",
+  "sample": "5 / 2245 = 0.2%",
+  "distinct_probe": "214 / 2245 = 9.5%",
+  "other": "6 / 2245 = 0.3%"
+ },
+ "ops_per_traj": {
+  "mean": 2.14,
+  "median": 2,
+  "p90": 3,
+  "max": 12
+ },
+ "sql_per_traj": {
+  "mean": 1.13,
+  "median": 1,
+  "p90": 2,
+  "max": 11
+ },
+ "db_tool_calls": 4096,
+ "error_rate_calls": "8 / 4096 = 0.2%",
+ "trajectories_with_any_error": "8 / 1993 = 0.4%",
+ "timeouts": 0,
+ "errors_followed_by_another_db_call": "8 / 8 = 100.0%",
+ "errors_followed_by_similar_call(ratio>=0.6)": "6 / 8 = 75.0%",
+ "errors_as_last_db_call": "0 / 8 = 0.0%",
+ "top_error_types": [
+  [
+   "Error: in prepare, no such column: X SELECT X",
+   3
+  ],
+  [
+   " Error: in prepare, no such column: setCode S",
+   2
+  ],
+  [
+   "span-error",
+   1
+  ],
+  [
+   " Error: in prepare, no such column: Admission",
+   1
+  ],
+  [
+   " Error: in prepare, no such column: weight SE",
+   1
+  ]
+ ],
+ "first_op_kind": {
+  "schema_file": 1927,
+  "select": 60,
+  "catalog": 4,
+  "distinct_probe": 1
+ },
+ "first_op_is_metadata": "1932 / 1992 = 97.0%",
+ "all_metadata_before_first_data_op (of trajs having both)": "1354 / 1378 = 98.3%",
+ "mean_relative_position": {
+  "meta": 0.072,
+  "select": 0.833,
+  "other": 0.657
+ },
+ "exact_duplicate_sql_within_traj": "3 / 2245 = 0.1%",
+ "calls_with_>1_sql_statement": "139 / 4096 = 3.4%",
+ "assistant_turns_with_parallel_db_calls": "0 / 4096 = 0.0%",
+ "parallel_batch_size_hist": {
+  "1": 4096
+ },
+ "by_model:us.anthropic.claude-opus-4-6-v1": {
+  "trajectories": 17,
+  "sql_per_traj": {
+   "mean": 2.53,
+   "median": 2,
+   "p90": 6,
+   "max": 7
+  },
+  "error_rate_calls": "1 / 60 = 1.7%"
+ },
+ "by_model:us.anthropic.claude-opus-4-7": {
+  "trajectories": 988,
+  "sql_per_traj": {
+   "mean": 0.88,
+   "median": 1.0,
+   "p90": 2,
+   "max": 9
+  },
+  "error_rate_calls": "3 / 1796 = 0.2%"
+ },
+ "by_model:us.anthropic.claude-opus-4-8": {
+  "trajectories": 988,
+  "sql_per_traj": {
+   "mean": 1.35,
+   "median": 1.0,
+   "p90": 3,
+   "max": 11
+  },
+  "error_rate_calls": "4 / 2240 = 0.2%"
+ },
+ "reward_mean": 0.675
+}

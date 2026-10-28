@@ -1,0 +1,106 @@
+{
+ "trajectories": 7442,
+ "models": {
+  "teacher (unstated; distilled, LLM-judged-correct only)": 7442
+ },
+ "op_kinds": {
+  "select": "30759 / 60732 = 50.6%",
+  "schema_tool": "24743 / 60732 = 40.7%",
+  "catalog": "3826 / 60732 = 6.3%",
+  "distinct_probe": "902 / 60732 = 1.5%",
+  "sample": "498 / 60732 = 0.8%",
+  "other": "2 / 60732 = 0.0%",
+  "ddl": "2 / 60732 = 0.0%"
+ },
+ "sql_statements_total": 35989,
+ "sql_kinds_of_sql_only": {
+  "select": "30759 / 35989 = 85.5%",
+  "catalog": "3826 / 35989 = 10.6%",
+  "sample": "498 / 35989 = 1.4%",
+  "distinct_probe": "902 / 35989 = 2.5%",
+  "ddl": "2 / 35989 = 0.0%",
+  "other": "2 / 35989 = 0.0%"
+ },
+ "ops_per_traj": {
+  "mean": 8.16,
+  "median": 7.0,
+  "p90": 15,
+  "max": 53
+ },
+ "sql_per_traj": {
+  "mean": 4.84,
+  "median": 4.0,
+  "p90": 10,
+  "max": 40
+ },
+ "db_tool_calls": 60711,
+ "error_rate_calls": "3087 / 60711 = 5.1%",
+ "trajectories_with_any_error": "2055 / 7442 = 27.6%",
+ "timeouts": 83,
+ "errors_followed_by_another_db_call": "3081 / 3087 = 99.8%",
+ "errors_followed_by_similar_call(ratio>=0.6)": "1696 / 3087 = 54.9%",
+ "errors_as_last_db_call": "6 / 3087 = 0.2%",
+ "top_error_types": [
+  [
+   "SQL_ERROR: ERROR: column X does not exist LIN",
+   1288
+  ],
+  [
+   "SQL_ERROR: ERROR: function round(double preci",
+   483
+  ],
+  [
+   "SQL_ERROR: ERROR: column reference X is ambig",
+   272
+  ],
+  [
+   "SQL_ERROR: ERROR: syntax error at or near X L",
+   151
+  ],
+  [
+   "SQL_ERROR: ERROR: missing FROM-clause entry f",
+   83
+  ],
+  [
+   "SQL_ERROR: ERROR: canceling statement due to ",
+   83
+  ],
+  [
+   "SQL_ERROR: ERROR: column X must appear in ",
+   48
+  ],
+  [
+   "SQL_ERROR: ERROR: column X does not",
+   34
+  ]
+ ],
+ "first_op_kind": {
+  "schema_tool": 7016,
+  "select": 60,
+  "catalog": 25
+ },
+ "first_op_is_metadata": "7041 / 7101 = 99.2%",
+ "all_metadata_before_first_data_op (of trajs having both)": "4527 / 6351 = 71.3%",
+ "mean_relative_position": {
+  "meta": 0.301,
+  "select": 0.693,
+  "other": 0.8,
+  "ddl": 0.763
+ },
+ "exact_duplicate_sql_within_traj": "2765 / 35989 = 7.7%",
+ "calls_with_>1_sql_statement": "19 / 60711 = 0.0%",
+ "assistant_turns_with_parallel_db_calls": "11840 / 39613 = 29.9%",
+ "parallel_batch_size_hist": {
+  "1": 27773,
+  "2": 5912,
+  "3": 3867,
+  "4": 1275,
+  "5": 488,
+  "6": 175,
+  "7": 86,
+  "8": 22,
+  "9": 7,
+  "10": 6,
+  "11": 2
+ }
+}

@@ -1,0 +1,155 @@
+{
+ "trajectories": 1980,
+ "models": {
+  "gpt-4o-airline": 200,
+  "gpt-4o-retail": 460,
+  "sonnet-35-new-airline": 400,
+  "sonnet-35-new-retail": 920
+ },
+ "op_kinds": {
+  "select": "10400 / 13370 = 77.8%",
+  "dml": "2762 / 13370 = 20.7%",
+  "catalog": "208 / 13370 = 1.6%"
+ },
+ "sql_statements_total": 13370,
+ "sql_kinds_of_sql_only": {
+  "select": "10400 / 13370 = 77.8%",
+  "catalog": "208 / 13370 = 1.6%",
+  "dml": "2762 / 13370 = 20.7%"
+ },
+ "ops_per_traj": {
+  "mean": 6.75,
+  "median": 7.0,
+  "p90": 11,
+  "max": 24
+ },
+ "sql_per_traj": {
+  "mean": 6.75,
+  "median": 7.0,
+  "p90": 11,
+  "max": 24
+ },
+ "db_tool_calls": 13370,
+ "error_rate_calls": "923 / 13370 = 6.9%",
+ "trajectories_with_any_error": "628 / 1980 = 31.7%",
+ "timeouts": 0,
+ "errors_followed_by_another_db_call": "789 / 923 = 85.5%",
+ "errors_followed_by_similar_call(ratio>=0.6)": "352 / 923 = 38.1%",
+ "errors_as_last_db_call": "134 / 923 = 14.5%",
+ "top_error_types": [
+  [
+   "Error: user not found",
+   530
+  ],
+  [
+   "Error: non-delivered order cannot be exchange",
+   56
+  ],
+  [
+   "Error: payment amount does not add up, total ",
+   35
+  ],
+  [
+   "Error: payment method should be either the or",
+   30
+  ],
+  [
+   "Error: the number of items to be exchanged sh",
+   28
+  ],
+  [
+   "Error: order not found",
+   28
+  ],
+  [
+   "Error: gift card balance is not enough",
+   24
+  ],
+  [
+   "Error: non-pending order cannot be modified",
+   23
+  ]
+ ],
+ "first_op_kind": {
+  "select": 1911,
+  "catalog": 33,
+  "dml": 1
+ },
+ "first_op_is_metadata": "33 / 1945 = 1.7%",
+ "all_metadata_before_first_data_op (of trajs having both)": "33 / 208 = 15.9%",
+ "mean_relative_position": {
+  "select": 0.4,
+  "dml": 0.87,
+  "meta": 0.448
+ },
+ "exact_duplicate_sql_within_traj": "239 / 13370 = 1.8%",
+ "calls_with_>1_sql_statement": "0 / 13370 = 0.0%",
+ "assistant_turns_with_parallel_db_calls": "0 / 13370 = 0.0%",
+ "parallel_batch_size_hist": {
+  "1": 13370
+ },
+ "by_model:gpt-4o-airline": {
+  "trajectories": 200,
+  "op_kinds": {
+   "select": "676 / 928 = 72.8%",
+   "dml": "250 / 928 = 26.9%",
+   "catalog": "2 / 928 = 0.2%"
+  },
+  "ops_per_traj": {
+   "mean": 4.64,
+   "median": 4.0,
+   "p90": 10,
+   "max": 24
+  },
+  "error_rate_calls": "73 / 928 = 7.9%",
+  "assistant_turns_with_parallel_db_calls": "0 / 928 = 0.0%"
+ },
+ "by_model:gpt-4o-retail": {
+  "trajectories": 460,
+  "op_kinds": {
+   "select": "2371 / 3143 = 75.4%",
+   "dml": "666 / 3143 = 21.2%",
+   "catalog": "106 / 3143 = 3.4%"
+  },
+  "ops_per_traj": {
+   "mean": 6.83,
+   "median": 6.0,
+   "p90": 11,
+   "max": 19
+  },
+  "error_rate_calls": "276 / 3143 = 8.8%",
+  "assistant_turns_with_parallel_db_calls": "0 / 3143 = 0.0%"
+ },
+ "by_model:sonnet-35-new-airline": {
+  "trajectories": 400,
+  "op_kinds": {
+   "select": "1975 / 2485 = 79.5%",
+   "dml": "494 / 2485 = 19.9%",
+   "catalog": "16 / 2485 = 0.6%"
+  },
+  "ops_per_traj": {
+   "mean": 6.21,
+   "median": 6.0,
+   "p90": 11,
+   "max": 24
+  },
+  "error_rate_calls": "84 / 2485 = 3.4%",
+  "assistant_turns_with_parallel_db_calls": "0 / 2485 = 0.0%"
+ },
+ "by_model:sonnet-35-new-retail": {
+  "trajectories": 920,
+  "op_kinds": {
+   "select": "5378 / 6814 = 78.9%",
+   "dml": "1352 / 6814 = 19.8%",
+   "catalog": "84 / 6814 = 1.2%"
+  },
+  "ops_per_traj": {
+   "mean": 7.41,
+   "median": 7.0,
+   "p90": 11,
+   "max": 20
+  },
+  "error_rate_calls": "490 / 6814 = 7.2%",
+  "assistant_turns_with_parallel_db_calls": "0 / 6814 = 0.0%"
+ }
+}

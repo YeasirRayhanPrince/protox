@@ -1,0 +1,58 @@
+{
+ "trajectories": 1,
+ "models": {
+  "Claude 3.7 Sonnet (per dir name)": 1
+ },
+ "op_kinds": {
+  "schema_file": "24 / 25 = 96.0%",
+  "select": "1 / 25 = 4.0%"
+ },
+ "sql_statements_total": 1,
+ "sql_kinds_of_sql_only": {
+  "select": "1 / 1 = 100.0%"
+ },
+ "ops_per_traj": {
+  "mean": 25,
+  "median": 25,
+  "p90": 25,
+  "max": 25
+ },
+ "sql_per_traj": {
+  "mean": 1,
+  "median": 1,
+  "p90": 1,
+  "max": 1
+ },
+ "db_tool_calls": 25,
+ "error_rate_calls": "6 / 25 = 24.0%",
+ "trajectories_with_any_error": "1 / 1 = 100.0%",
+ "timeouts": 0,
+ "errors_followed_by_another_db_call": "6 / 6 = 100.0%",
+ "errors_followed_by_similar_call(ratio>=0.6)": "4 / 6 = 66.7%",
+ "errors_as_last_db_call": "0 / 6 = 0.0%",
+ "top_error_types": [
+  [
+   "EXECUTION RESULT of [execute_bash]: Command e",
+   5
+  ],
+  [
+   "EXECUTION RESULT of [execute_snowflake_sql]: ",
+   1
+  ]
+ ],
+ "first_op_kind": {
+  "schema_file": 1
+ },
+ "first_op_is_metadata": "1 / 1 = 100.0%",
+ "all_metadata_before_first_data_op (of trajs having both)": "0 / 1 = 0.0%",
+ "mean_relative_position": {
+  "meta": 0.483,
+  "select": 0.917
+ },
+ "exact_duplicate_sql_within_traj": "0 / 1 = 0.0%",
+ "calls_with_>1_sql_statement": "0 / 25 = 0.0%",
+ "assistant_turns_with_parallel_db_calls": "0 / 25 = 0.0%",
+ "parallel_batch_size_hist": {
+  "1": 25
+ }
+}
