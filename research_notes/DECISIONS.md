@@ -102,6 +102,13 @@ The hard hand-off is 2 → 3: an approximate evaluator must yield a certificate 
   invocations, worst runs time out; optimizer cost estimates misrank LLM indexes; execution validation costs
   more than tuning; best-of-5 is only knowable by oracle. Their fix (validate by building and running) is the
   trial we forbid.
+- **DataAgentBench / DAB** (Ma, Shankar, …, Parameswaran; UC Berkeley EPIC + Hasura PromptQL; arXiv 2603.20576;
+  https://ucbepic.github.io/DataAgentBench/). Read-only analytical NL questions over data split across
+  Postgres/MongoDB/SQLite/DuckDB (paper: 104 queries, 17 datasets; site still says 54/12). Best pass@1 57%
+  (GPT-5.5 in Codex), 52% Gemini-3.1-Pro (ReAct), 48% Claude-Sonnet-4.6 (Claude Code); none >70% pass@5.
+  90% of wrong answers are wrong plan (31%) or wrong implementation (57%); wrong data selection only 11%.
+  Exploratory calls 22–51% of calls; ~10 DB queries per task; <10% of turns parallel. No DB performance measured.
+  Relevance: evidence for Unknown 1 (agent traffic shape) and for agents as the workload; not a tuning benchmark.
 - Holistic tuners classified: see §1. Sources: Proto-X PVLDB 17:3373; UDO PVLDB 14(13); UniTune SIGMOD 2023;
   EvoTune arXiv 2607.17841; λ-Tune SIGMOD 2025 (arXiv 2411.03500).
 - Production evidence on agents and DBs: `Agent DB interaction/` notes. Key: in production LLMs read and
